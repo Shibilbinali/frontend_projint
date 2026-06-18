@@ -1,0 +1,125 @@
+import { useState } from 'react';
+import { NavLink, useNavigate } from 'react-router-dom';
+import {
+  LayoutDashboard, BookOpen, Package, ShoppingCart,
+  Users, BarChart3, Settings, ChevronLeft, ChevronRight,
+  BookMarked, LogOut, AlertTriangle
+} from 'lucide-react';
+import { useAuthStore } from '../../store/authStore';
+
+const navItems = [
+  { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', roles: ['admin', 'cashier'] },
+  { label: 'POS Billing', icon: ShoppingCart, path: '/pos', roles: ['admin', 'cashier'], highlight: true },
+];
+
+const adminNav = [
+  { label: 'Books', icon: BookOpen, path: '/books', roles: ['admin'] },
+  { label: 'Inventory', icon: Package, path: '/inventory', roles: ['admin'] },
+  { label: 'Customers', icon: Users, path: '/customers', roles: ['admin', 'cashier'] },
+  { label: 'Sales Reports', icon: BarChart3, path: '/sales', roles: ['admin'] },
+  { label: 'Settings', icon: Settings, path: '/settings', roles: ['admin', 'cashier'] },
+];
+
+export default function Sidebar({ lowStockCount = 0 }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const { user, logout } = useAuthStore();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  const allItems = [...navItems, ...adminNav].filter(
+    (item) => item.roles.includes(user?.role)
+  );
+
+  const mainItems = allItems.slice(0, 2);
+  const managementItems = allItems.slice(2);
+
+  return (
+    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
+      {/* Toggle button */}
+      <button
+        className="sidebar-toggle"
+        onClick={() => setCollapsed(!collapsed)}
+        aria-label="Toggle sidebar"
+      >
+        {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+      </button>
+
+      {/* Logo */}
+      <div className="sidebar-logo">
+        <div className="sidebar-logo-icon">📚</div>
+        <div className="sidebar-logo-text">
+          <span className="sidebar-logo-title">BookStore</span>
+          <span className="sidebar-logo-subtitle">Point of Sale</span>
+        </div>
+      </div>
+
+      {/* Navigation */}
+      <nav className="sidebar-nav">
+        {/* Main */}
+        <div className="sidebar-section-label">Main</div>
+        {mainItems.map((item) => (
+          <NavLink
+            key={item.path}
+            to={item.path}
+            className={({ isActive }) =>
+              `sidebar-nav-item ${isActive ? 'active' : ''}`
+            }
+            title={collapsed ? item.label : ''}
+          >
+            <item.icon className="nav-icon" size={20} />
+            <span className="nav-label">{item.label}</span>
+          </NavLink>
+        ))}
+
+        {/* Management */}
+        {managementItems.length > 0 && (
+          <>
+            <div className="sidebar-section-label">Management</div>
+            {managementItems.map((item) => (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                className={({ isActive }) =>
+                  `sidebar-nav-item ${isActive ? 'active' : ''}`
+                }
+                title={collapsed ? item.label : ''}
+              >
+                <item.icon className="nav-icon" size={20} />
+                <span className="nav-label">{item.label}</span>
+                {item.path === '/inventory' && lowStockCount > 0 && (
+                  <span className="nav-badge">{lowStockCount}</span>
+                )}
+              </NavLink>
+            ))}
+          </>
+        )}
+      </nav>
+
+      {/* Footer */}
+      <div className="sidebar-footer">
+        <div className="sidebar-user">
+          <div className="sidebar-avatar">
+            {user?.username?.[0]?.toUpperCase() || 'U'}
+          </div>
+          <div className="sidebar-user-info">
+            <div className="sidebar-user-name">{user?.username}</div>
+            <div className="sidebar-user-role">{user?.role}</div>
+          </div>
+        </div>
+        <button
+          className="sidebar-nav-item w-full"
+          onClick={handleLogout}
+          style={{ marginTop: '8px', color: 'var(--color-danger)' }}
+          title={collapsed ? 'Logout' : ''}
+        >
+          <LogOut size={20} className="nav-icon" />
+          <span className="nav-label">Logout</span>
+        </button>
+      </div>
+    </aside>
+  );
+}

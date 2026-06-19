@@ -2,7 +2,21 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '../store/authStore';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+let API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+
+if (API_BASE) {
+  API_BASE = API_BASE.trim();
+  if (!/^https?:\/\//i.test(API_BASE)) {
+    if (API_BASE.startsWith('//')) {
+      API_BASE = `https:${API_BASE}`;
+    } else {
+      API_BASE = `https://${API_BASE}`;
+    }
+  }
+}
+
+console.log('VITE_API_URL =', import.meta.env.VITE_API_URL);
+console.log('API_BASE =', API_BASE);
 
 const api = axios.create({
   baseURL: API_BASE,

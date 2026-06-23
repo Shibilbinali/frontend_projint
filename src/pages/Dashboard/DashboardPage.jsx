@@ -34,19 +34,30 @@ export default function DashboardPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const loadData = () => {
+    setLoading(true);
     dashboardAPI.getStats()
       .then((res) => setData(res.data))
-      .catch((err) => console.error(err))
+      .catch((err) => {
+        console.error(err);
+        setData(null);
+      })
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadData();
   }, []);
 
   if (loading) return <Spinner text="Loading dashboard..." />;
   if (!data) return (
     <div className="empty-state">
-      <div className="empty-state-icon">📊</div>
+      <div className="empty-state-icon"><AlertTriangle size={48} color="var(--color-danger)" /></div>
       <h3>Could not load dashboard</h3>
-      <p>Make sure the backend is running and the database is set up.</p>
+      <p>Make sure the backend is running and the database is connected.</p>
+      <button className="btn btn-primary mt-md" onClick={loadData}>
+        Retry Connection
+      </button>
     </div>
   );
 

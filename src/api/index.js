@@ -68,6 +68,8 @@ const ERROR_MESSAGES = {
   503: 'The service is currently experiencing high demand. Please try again later.',
 };
 
+let lastNetworkErrorTime = 0;
+
 // Response interceptor — handle errors gracefully
 api.interceptors.response.use(
   (response) => {
@@ -101,10 +103,15 @@ api.interceptors.response.use(
 
     // Network / timeout errors (fetch actually fails)
     if (!error.response) {
-      if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
-        toast.error('Request timed out. Please check your connection and try again.', { id: 'network-timeout' });
-      } else {
-        toast.error('Network connectivity failed. Please check if the server is running and accessible.', { id: 'network-error' });
+      error.hasGlobalToast = true;
+      const now = Date.now();
+      if (now - lastNetworkErrorTime > 3000) {
+        lastNetworkErrorTime = now;
+        if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+          toast.error('Request timed out. Please check your connection and try again.', { id: 'network-timeout' });
+        } else {
+          toast.error('Network connectivity failed. Please check if the server is running and accessible.', { id: 'network-error' });
+        }
       }
       return Promise.reject(error);
     }
@@ -114,6 +121,7 @@ api.interceptors.response.use(
     if (!serverMessage) {
       const friendlyMessage = ERROR_MESSAGES[status];
       if (friendlyMessage) {
+        error.hasGlobalToast = true;
         toast.error(friendlyMessage, { id: `http-${status}` });
       }
     }
@@ -136,16 +144,13 @@ export const booksAPI = {
   create: (data) => api.post('/books', data),
   update: (id, data) => api.put(`/books/${id}`, data),
   delete: (id) => api.delete(`/books/${id}`),
-  upload: (formData) => api.post('/books/upload', formData),
+  upload: (formData, onUploadProgress) => api.post('/books/upload', formData, { onUploadProgress }),
   fetchMetadata: (data) => api.post('/books/fetch-metadata', data),
   refreshMetadata: (id) => api.post(`/books/${id}/refresh`),
-  verifyCategories: () => api.post('/books/verify-categories'),
-  getVerifyCategoriesReport: () => api.get('/books/verify-categories-report'),
-  getManualReview: () => api.get('/books/manual-review'),
-  approveCategory: (id, data) => api.post(`/books/${id}/approve-category`, data),
-  suggestCategory: (id, data) => api.post(`/books/${id}/suggest-category`, data),
-  rejectSuggestion: (id) => api.post(`/books/${id}/reject-suggestion`),
-  auditBooks: () => api.post('/books/audit'),
+  updateCategory: (id, categoryId) => api.post(`/books/${id}/category`, { category_id: categoryId }),
+  updateCoverImage: (id, formData, type, onUploadProgress) => api.patch(`/books/${id}/cover?type=${type}`, formData, { headers: { 'Content-Type': 'multipart/form-data' }, onUploadProgress }),
+
+  auditBooks: () => api.post('/catalog-audit/run'),
   getAuditReport: () => api.get('/books/audit-report'),
   import: (formData, duplicateMode, onUploadProgress) => api.post(`/books/bulk-import?duplicateMode=${duplicateMode}`, formData, { timeout: 300000, headers: { 'Content-Type': 'multipart/form-data' }, onUploadProgress }),
   preview: (formData, onUploadProgress) => api.post('/books/bulk-import?preview=true', formData, { timeout: 120000, headers: { 'Content-Type': 'multipart/form-data' }, onUploadProgress }),

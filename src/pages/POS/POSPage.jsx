@@ -436,7 +436,7 @@ export default function POSPage() {
       resetNewCustomerForm();
       toast.success('Customer created and selected successfully!');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to create customer.');
+      if (!err.hasGlobalToast) toast.error(err.response?.data?.message || 'Failed to create customer.');
     } finally {
       setSavingCustomer(false);
     }
@@ -501,14 +501,14 @@ export default function POSPage() {
       toast.success(`Sale completed!\nInvoice: ${res.data.invoice_number || '#' + res.data.id}`, { icon: '🎉', duration: 5000 });
       window.dispatchEvent(new CustomEvent('inventory-updated'));
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to process sale.');
+      if (!err.hasGlobalToast) toast.error(err.response?.data?.message || 'Failed to process sale.');
     } finally {
       setProcessingCheckout(false);
     }
   };
 
   const getCoverUrl = useCallback((book) => {
-    const url = book.cover_image || book.front_cover_url || book.cover_image_url;
+    const url = book.front_cover_url || book.cover_image || book.cover_image_url;
     if (!url) return '';
     if (url.startsWith('http')) return url;
     const API_URL = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : 'http://localhost:5000';

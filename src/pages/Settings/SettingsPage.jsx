@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Trash2, Edit2, Tag, AlertTriangle, Sparkles, Check, CheckCircle2, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Edit2, Tag, AlertTriangle, Sparkles, Check, CheckCircle2, RefreshCw, Info, X } from 'lucide-react';
 import { authAPI, usersAPI, categoriesAPI, booksAPI, settingsAPI } from '../../api';
 import { useAuthStore } from '../../store/authStore';
 import Modal from '../../components/UI/Modal';
@@ -25,7 +25,7 @@ function ChangePasswordSection() {
       toast.success('Password changed successfully!');
       setForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to change password.');
+      if (!err.hasGlobalToast) toast.error(err.response?.data?.message || 'Failed to change password.');
     } finally {
       setSaving(false);
     }
@@ -86,7 +86,7 @@ function UsersSection({ onUserAction }) {
       setForm({ username: '', email: '', password: '', role: 'cashier' });
       if (onUserAction) onUserAction();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to create user.');
+      if (!err.hasGlobalToast) toast.error(err.response?.data?.message || 'Failed to create user.');
     } finally {
       setSaving(false);
     }
@@ -101,7 +101,7 @@ function UsersSection({ onUserAction }) {
     } catch (err) {
       console.error('[UsersSection] handleToggleActive error:', err);
       console.error('[UsersSection] Server response:', err.response?.data);
-      toast.error(err.response?.data?.message || 'Failed to update user.');
+      if (!err.hasGlobalToast) toast.error(err.response?.data?.message || 'Failed to update user.');
     }
   };
 
@@ -112,7 +112,7 @@ function UsersSection({ onUserAction }) {
       toast.success(`User ${user.username} deleted permanently.`);
       if (onUserAction) onUserAction();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to delete user.');
+      if (!err.hasGlobalToast) toast.error(err.response?.data?.message || 'Failed to delete user.');
     }
   };
 
@@ -346,7 +346,7 @@ function CategoriesSection() {
       setForm({ name: '', description: '', color: '#C8732A' });
       load();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to create category.');
+      if (!err.hasGlobalToast) toast.error(err.response?.data?.message || 'Failed to create category.');
     } finally {
       setSaving(false);
     }
@@ -436,606 +436,13 @@ function CategoriesSection() {
   );
 }
 
-function CategoryVerificationSection() {
-  const { user } = useAuthStore();
-  const isAdmin = user?.role === 'admin';
-  const [loading, setLoading] = useState(false);
-  const [report, setReport] = useState(null);
-  const [manualReviewBooks, setManualReviewBooks] = useState([]);
-  const [categories, setCategories] = useState([]);
-  const [approvingId, setApprovingId] = useState(null);
-  const [editStates, setEditStates] = useState({});
-
-  const loadData = async () => {
-    try {
-      const [reviewRes, catsRes, reportRes] = await Promise.all([
-        booksAPI.getManualReview(),
-        categoriesAPI.getAll(),
-        booksAPI.getVerifyCategoriesReport().catch(() => ({ data: null }))
-      ]);
-      setManualReviewBooks(reviewRes.data);
-      setCategories(catsRes.data);
-      if (reportRes && reportRes.data && reportRes.data.timestamp) {
-        setReport(reportRes.data);
-      }
-
-      const initialStates = {};
-      reviewRes.data.forEach(book => {
-        initialStates[book.id] = {
-          category_id: book.suggested_category_id || book.category_id || '',
-          secondary_categories: book.suggested_secondary_category_ids || (book.secondary_categories ? book.secondary_categories.map(c => c.id) : [])
-        };
-      });
-      setEditStates(initialStates);
-    } catch (err) {
-      console.error('Failed to load manual review data', err);
-    }
-  };
-
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const handleSuggest = async (bookId) => {
-    const editState = editStates[bookId];
-    if (!editState || !editState.category_id) {
-      toast.error('Please select a primary category.');
-      return;
-    }
-    setApprovingId(bookId);
-    try {
-      await booksAPI.suggestCategory(bookId, {
-        category_id: parseInt(editState.category_id),
-        secondary_categories: editState.secondary_categories
-      });
-      toast.success('Category suggestion submitted successfully!');
-      loadData();
-    } catch (err) {
-      toast.error('Failed to submit category suggestion.');
-    } finally {
-      setApprovingId(null);
-    }
-  };
-
-  const handleApproveSuggestion = async (book) => {
-    setApprovingId(book.id);
-    try {
-      await booksAPI.approveCategory(book.id, {
-        category_id: book.suggested_category_id,
-        secondary_categories: book.suggested_secondary_category_ids
-      });
-      toast.success('Cashier suggestion approved successfully!');
-      loadData();
-    } catch (err) {
-      toast.error('Failed to approve cashier suggestion.');
-    } finally {
-      setApprovingId(null);
-    }
-  };
-
-  const handleRejectSuggestion = async (bookId) => {
-    setApprovingId(bookId);
-    try {
-      await booksAPI.rejectSuggestion(bookId);
-      toast.success('Cashier suggestion rejected.');
-      loadData();
-    } catch (err) {
-      toast.error('Failed to reject suggestion.');
-    } finally {
-      setApprovingId(null);
-    }
-  };
-
-  const handleScan = async () => {
-    setLoading(true);
-    const toastId = toast.loading('Running book category verification scan...');
-    try {
-      const res = await booksAPI.verifyCategories();
-      setReport(res.data);
-      toast.success('Category scan completed successfully!', { id: toastId });
-      loadData();
-    } catch (err) {
-      toast.error('Failed to complete category scan.', { id: toastId });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleApprove = async (bookId) => {
-    const editState = editStates[bookId];
-    if (!editState || !editState.category_id) {
-      toast.error('Please select a primary category.');
-      return;
-    }
-    setApprovingId(bookId);
-    try {
-      await booksAPI.approveCategory(bookId, {
-        category_id: parseInt(editState.category_id),
-        secondary_categories: editState.secondary_categories
-      });
-      toast.success('Book category approved successfully!');
-      loadData();
-    } catch (err) {
-      toast.error('Failed to approve book category.');
-    } finally {
-      setApprovingId(null);
-    }
-  };
-
-  const handleSecondaryToggle = (bookId, catId) => {
-    const current = editStates[bookId]?.secondary_categories || [];
-    let updated;
-    if (current.includes(catId)) {
-      updated = current.filter(id => id !== catId);
-    } else {
-      updated = [...current, catId];
-    }
-    setEditStates(prev => ({
-      ...prev,
-      [bookId]: {
-        ...prev[bookId],
-        secondary_categories: updated
-      }
-    }));
-  };
-
-  const handlePrimaryChange = (bookId, catId) => {
-    const currentSec = editStates[bookId]?.secondary_categories || [];
-    const updatedSec = currentSec.filter(id => id !== parseInt(catId));
-    setEditStates(prev => ({
-      ...prev,
-      [bookId]: {
-        ...prev[bookId],
-        category_id: catId,
-        secondary_categories: updatedSec
-      }
-    }));
-  };
-
-  return (
-    <div className="card mb-lg">
-      <style>{`
-        .scan-stats-grid {
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          gap: var(--spacing-md);
-          margin-top: var(--spacing-md);
-          margin-bottom: var(--spacing-lg);
-        }
-        @media (max-width: 768px) {
-          .scan-stats-grid {
-            grid-template-columns: repeat(2, 1fr);
-          }
-        }
-        .scan-stat-card {
-          background: var(--color-surface-2);
-          border: 1px solid var(--color-border);
-          border-radius: var(--radius-md);
-          padding: var(--spacing-md);
-          text-align: center;
-          transition: all 0.2s ease;
-        }
-        .scan-stat-card:hover {
-          transform: translateY(-2px);
-          border-color: var(--color-primary);
-        }
-        .scan-stat-val {
-          font-size: 1.8rem;
-          font-weight: 800;
-          color: var(--color-text);
-          margin-bottom: 4px;
-        }
-        .scan-stat-label {
-          font-size: 0.75rem;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          color: var(--color-text-muted);
-        }
-        .review-book-list {
-          display: flex;
-          flex-direction: column;
-          gap: var(--spacing-md);
-          margin-top: var(--spacing-md);
-        }
-        .review-book-card {
-          background: var(--color-surface-2);
-          border: 1px solid var(--color-border);
-          border-radius: var(--radius-md);
-          padding: var(--spacing-md);
-          display: flex;
-          flex-direction: column;
-          gap: var(--spacing-md);
-          position: relative;
-        }
-        .review-book-card.low-confidence {
-          border-left: 3px solid var(--color-warning);
-        }
-        .review-book-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: flex-start;
-          gap: var(--spacing-sm);
-        }
-        .review-book-title {
-          font-size: 1.05rem;
-          font-weight: 700;
-          color: var(--color-text);
-          margin: 0 0 2px 0;
-        }
-        .review-book-author {
-          font-size: 0.85rem;
-          color: var(--color-text-muted);
-        }
-        .proposal-badge {
-          background: rgba(244, 162, 97, 0.12);
-          border: 1px solid rgba(244, 162, 97, 0.3);
-          color: var(--color-warning);
-          padding: 4px 8px;
-          border-radius: var(--radius-sm);
-          font-size: 0.75rem;
-          font-weight: 600;
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .category-editor-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: var(--spacing-md);
-          background: var(--color-surface-3);
-          padding: var(--spacing-md);
-          border-radius: var(--radius-sm);
-          border: 1px solid var(--color-border);
-        }
-        @media (max-width: 600px) {
-          .category-editor-grid {
-            grid-template-columns: 1fr;
-          }
-        }
-        .secondary-checkboxes {
-          display: grid;
-          grid-template-columns: repeat(2, 1fr);
-          gap: 6px;
-        }
-        .checkbox-label {
-          display: flex;
-          align-items: center;
-          gap: var(--spacing-xs);
-          font-size: 0.8rem;
-          color: var(--color-text-secondary);
-          cursor: pointer;
-        }
-        .report-section {
-          background: var(--color-surface-3);
-          border: 1px solid var(--color-border);
-          border-radius: var(--radius-md);
-          padding: var(--spacing-md);
-          margin-bottom: var(--spacing-lg);
-        }
-        .report-title {
-          font-size: 0.9rem;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          color: var(--color-text-muted);
-          margin-bottom: var(--spacing-sm);
-          display: flex;
-          align-items: center;
-          gap: var(--spacing-xs);
-        }
-        .list-container {
-          max-height: 180px;
-          overflow-y: auto;
-          border: 1px solid var(--color-border);
-          border-radius: var(--radius-sm);
-          background: var(--color-surface-2);
-          font-size: 0.8rem;
-        }
-        .list-row {
-          display: flex;
-          justify-content: space-between;
-          padding: 8px 12px;
-          border-bottom: 1px solid var(--color-border);
-        }
-        .list-row:last-child {
-          border-bottom: none;
-        }
-      `}</style>
-
-      <div className="flex items-center justify-between mb-sm">
-        <div className="flex items-center gap-sm">
-          <Sparkles size={18} color="var(--color-primary)" />
-          <h3 className="font-display flex items-center gap-sm" style={{ fontSize: '1rem', margin: 0 }}>
-            <span>Category Verification & Correction</span>
-            <Badge type={isAdmin ? 'success' : 'info'} style={{ fontSize: '0.7rem', padding: '2px 6px' }}>
-              {isAdmin ? '⚙ Full Access (Admin)' : '👁 View Only (Cashier)'}
-            </Badge>
-          </h3>
-        </div>
-        <button
-          className="btn btn-primary btn-sm"
-          onClick={handleScan}
-          disabled={loading || !isAdmin}
-          title={!isAdmin ? 'Admin permission required.' : 'Scan & Verify Categories'}
-          style={{
-            cursor: !isAdmin ? 'not-allowed' : 'pointer',
-            opacity: !isAdmin ? 0.6 : 1
-          }}
-          id="verify-categories-btn"
-        >
-          {loading ? (
-            <><RefreshCw size={14} className="spinner" style={{ marginRight: 6 }} /> Analyzing...</>
-          ) : (
-            <><Sparkles size={14} style={{ marginRight: 6 }} /> Scan & Verify Categories</>
-          )}
-        </button>
-      </div>
-
-      <p style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem', marginBottom: 'var(--spacing-md)' }}>
-        Verify book categorizations using database title, description, and publisher metadata. Detects anomalies, duplicate/conflicting records, and prompts manual review for low-confidence assignments.
-      </p>
-
-      {/* Global scan report */}
-      {report && (
-        <div className="report-dashboard">
-          <div className="scan-stats-grid">
-            <div className="scan-stat-card">
-              <div className="scan-stat-val">{report.stats.totalChecked}</div>
-              <div className="scan-stat-label">Books Checked</div>
-            </div>
-            <div className="scan-stat-card" style={{ borderColor: report.stats.movedCount > 0 ? 'rgba(76, 175, 114, 0.4)' : 'var(--color-border)' }}>
-              <div className="scan-stat-val" style={{ color: report.stats.movedCount > 0 ? 'var(--color-success)' : 'inherit' }}>{report.stats.movedCount}</div>
-              <div className="scan-stat-label">Auto-Corrected</div>
-            </div>
-            <div className="scan-stat-card" style={{ borderColor: report.stats.reviewCount > 0 ? 'rgba(244, 162, 97, 0.4)' : 'var(--color-border)' }}>
-              <div className="scan-stat-val" style={{ color: report.stats.reviewCount > 0 ? 'var(--color-warning)' : 'inherit' }}>{report.stats.reviewCount}</div>
-              <div className="scan-stat-label">Needs Review</div>
-            </div>
-            <div className="scan-stat-card" style={{ borderColor: report.stats.conflictCount > 0 ? 'rgba(224, 82, 82, 0.4)' : 'var(--color-border)' }}>
-              <div className="scan-stat-val" style={{ color: report.stats.conflictCount > 0 ? 'var(--color-danger)' : 'inherit' }}>{report.stats.conflictCount}</div>
-              <div className="scan-stat-label">Duplicates/Conflicts</div>
-            </div>
-          </div>
-
-          {/* Moved Books List */}
-          {report.moved.length > 0 && (
-            <div className="report-section">
-              <div className="report-title" style={{ color: 'var(--color-success)' }}>
-                <CheckCircle2 size={14} /> Auto-Corrected Category Assignments ({report.moved.length})
-              </div>
-              <div className="list-container">
-                {report.moved.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
-                      <strong>{bk.title}</strong> by {bk.author}
-                    </div>
-                    <div style={{ color: 'var(--color-text-muted)' }}>
-                      {bk.previousCategory} → <span style={{ color: 'var(--color-success)', fontWeight: 600 }}>{bk.newCategory}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Conflicts/Duplicates List */}
-          {report.conflicts.length > 0 && (
-            <div className="report-section" style={{ borderColor: 'rgba(224, 82, 82, 0.3)' }}>
-              <div className="report-title" style={{ color: 'var(--color-danger)' }}>
-                <AlertTriangle size={14} /> Conflicting or Duplicate Database Records ({report.conflicts.length})
-              </div>
-              <div className="list-container">
-                {report.conflicts.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
-                      <strong>{bk.title}</strong> by {bk.author} {bk.isbn ? `(ISBN: ${bk.isbn})` : ''}
-                    </div>
-                    <div style={{ color: 'var(--color-danger)' }}>
-                      {bk.conflictType}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Manual review items */}
-      <div style={{ borderTop: '1px solid var(--color-border)', paddingTop: 'var(--spacing-md)', marginTop: 'var(--spacing-md)' }}>
-        <h4 className="font-display mb-sm" style={{ fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span>Manual Category Review Queue</span>
-          <Badge type={manualReviewBooks.length > 0 ? 'warning' : 'success'}>
-            {manualReviewBooks.length} items pending
-          </Badge>
-        </h4>
-
-        {manualReviewBooks.length === 0 ? (
-          <div style={{
-            background: 'rgba(76, 175, 114, 0.08)',
-            border: '1px solid rgba(76, 175, 114, 0.2)',
-            borderRadius: 'var(--radius-md)',
-            padding: '16px 20px',
-            color: 'var(--color-success)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            fontSize: '0.85rem'
-          }}>
-            <CheckCircle2 size={16} />
-            <span>Excellent! All bookstore catalog items are categorized with high confidence. No manual reviews pending.</span>
-          </div>
-        ) : (
-          <div className="review-book-list">
-            {manualReviewBooks.map((book) => {
-              const editState = editStates[book.id] || { category_id: '', secondary_categories: [] };
-              const currentCategoryName = book.category_name || 'Unassigned';
-              
-              return (
-                <div key={book.id} className="review-book-card low-confidence">
-                  <div className="review-book-header">
-                    <div>
-                      <h5 className="review-book-title">{book.title}</h5>
-                      <span className="review-book-author">by {book.author} | Publisher: {book.publisher || 'N/A'}</span>
-                    </div>
-                    <div className="flex gap-sm items-center">
-                      <span className="proposal-badge">
-                        <AlertTriangle size={12} /> Proposed: {book.categorization_notes ? book.categorization_notes.split(':')[0] : 'Fiction'}
-                      </span>
-                      <Badge type="info">Confidence: {parseFloat(book.categorization_confidence).toFixed(2)}</Badge>
-                    </div>
-                  </div>
-
-                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--color-text-secondary)', fontStyle: 'italic' }}>
-                    Reasoning: {book.categorization_notes}
-                  </p>
-
-                  {/* Cashier Suggestion Info Display */}
-                  {book.suggestion_cashier_name && (
-                    <div style={{
-                      background: book.suggestion_cashier_name === user?.username ? 'rgba(244, 162, 97, 0.08)' : 'rgba(91, 155, 213, 0.08)',
-                      border: book.suggestion_cashier_name === user?.username ? '1px solid rgba(244, 162, 97, 0.2)' : '1px solid rgba(91, 155, 213, 0.2)',
-                      borderRadius: 'var(--radius-sm)',
-                      padding: '8px 12px',
-                      fontSize: '0.8rem',
-                      color: book.suggestion_cashier_name === user?.username ? 'var(--color-warning)' : 'var(--color-info)',
-                      marginBottom: 'var(--spacing-xs)'
-                    }}>
-                      {book.suggestion_cashier_name === user?.username ? (
-                        <span>📝 You submitted a correction suggestion: <strong>{categories.find(c => c.id === book.suggested_category_id)?.name}</strong> (Pending Admin Approval)</span>
-                      ) : (
-                        <span>💡 Cashier <strong>{book.suggestion_cashier_name}</strong> suggested: <strong>{categories.find(c => c.id === book.suggested_category_id)?.name}</strong></span>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="category-editor-grid">
-                    <div className="input-group">
-                      <label className="input-label" style={{ fontSize: '0.75rem' }}>Primary Category</label>
-                      <select
-                        className="select"
-                        value={editState.category_id}
-                        onChange={(e) => handlePrimaryChange(book.id, e.target.value)}
-                        style={{ padding: '6px 12px', fontSize: '0.85rem' }}
-                      >
-                        <option value="">Select Primary Category...</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>{c.name}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="input-group">
-                      <label className="input-label" style={{ fontSize: '0.75rem' }}>Secondary Categories</label>
-                      <div className="secondary-checkboxes">
-                        {categories
-                          .filter(c => c.id !== parseInt(editState.category_id))
-                          .map((c) => {
-                            const isChecked = editState.secondary_categories.includes(c.id);
-                            return (
-                              <label key={c.id} className="checkbox-label">
-                                <input
-                                  type="checkbox"
-                                  checked={isChecked}
-                                  onChange={() => handleSecondaryToggle(book.id, c.id)}
-                                />
-                                <span>{c.name}</span>
-                              </label>
-                            );
-                          })}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end gap-sm" style={{ flexWrap: 'wrap' }}>
-                    <div style={{ marginRight: 'auto', fontSize: '0.75rem', color: 'var(--color-text-muted)', display: 'flex', alignSelf: 'center' }}>
-                      Current Db Category: <strong style={{ color: 'var(--color-text)', marginLeft: 4 }}>{currentCategoryName}</strong>
-                    </div>
-                    
-                    {/* Cashier suggest button: disabled for admin */}
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={() => handleSuggest(book.id)}
-                      disabled={approvingId === book.id || isAdmin}
-                      title={isAdmin ? 'Admin cannot submit suggestions; use Approve buttons.' : 'Submit Correction Suggestion'}
-                      style={{
-                        fontSize: '0.75rem',
-                        padding: '6px 12px',
-                        cursor: isAdmin ? 'not-allowed' : 'pointer',
-                        opacity: isAdmin ? 0.6 : 1
-                      }}
-                      id={`suggest-category-btn-${book.id}`}
-                    >
-                      {approvingId === book.id ? 'Submitting...' : 'Submit Correction Suggestion'}
-                    </button>
-
-                    {/* Admin Approve / Reject buttons: disabled with tooltip for Cashier */}
-                    {book.suggestion_cashier_name && (
-                      <>
-                        <button
-                          className="btn btn-primary btn-sm"
-                          onClick={() => handleApproveSuggestion(book)}
-                          disabled={approvingId === book.id || !isAdmin}
-                          title={!isAdmin ? 'Admin permission required.' : 'Approve Suggestion'}
-                          style={{
-                            fontSize: '0.75rem',
-                            padding: '6px 12px',
-                            cursor: !isAdmin ? 'not-allowed' : 'pointer',
-                            opacity: !isAdmin ? 0.6 : 1
-                          }}
-                          id={`approve-suggestion-btn-${book.id}`}
-                        >
-                          Approve Suggestion
-                        </button>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleRejectSuggestion(book.id)}
-                          disabled={approvingId === book.id || !isAdmin}
-                          title={!isAdmin ? 'Admin permission required.' : 'Reject Suggestion'}
-                          style={{
-                            fontSize: '0.75rem',
-                            padding: '6px 12px',
-                            cursor: !isAdmin ? 'not-allowed' : 'pointer',
-                            opacity: !isAdmin ? 0.6 : 1
-                          }}
-                          id={`reject-suggestion-btn-${book.id}`}
-                        >
-                          Reject Suggestion
-                        </button>
-                      </>
-                    )}
-                    <button
-                      className="btn btn-primary btn-sm btn-ghost"
-                      onClick={() => handleApprove(book.id)}
-                      disabled={approvingId === book.id || !isAdmin}
-                      title={!isAdmin ? 'Admin permission required.' : (book.suggestion_cashier_name ? 'Approve Custom' : 'Approve Assignment')}
-                      style={{
-                        fontSize: '0.75rem',
-                        padding: '6px 12px',
-                        borderColor: 'var(--color-primary)',
-                        cursor: !isAdmin ? 'not-allowed' : 'pointer',
-                        opacity: !isAdmin ? 0.6 : 1
-                      }}
-                      id={`approve-custom-btn-${book.id}`}
-                    >
-                      {approvingId === book.id ? 'Saving...' : book.suggestion_cashier_name ? 'Approve Custom' : 'Approve Assignment'}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function CatalogAuditSection() {
   const { user } = useAuthStore();
   const isAdmin = user?.role === 'admin';
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState(null);
+  const [selectedWarning, setSelectedWarning] = useState(null);
 
   const loadReport = () => {
     booksAPI.getAuditReport().then((res) => {
@@ -1050,6 +457,7 @@ function CatalogAuditSection() {
   }, []);
 
   const handleAudit = async () => {
+    if (loading) return; // Prevent duplicate requests
     setLoading(true);
     const toastId = toast.loading('Auditing database book records...');
     try {
@@ -1057,16 +465,309 @@ function CatalogAuditSection() {
       setReport(res.data);
       toast.success('Database audit completed successfully!', { id: toastId });
     } catch (err) {
-      toast.error('Failed to run database audit.', { id: toastId });
+      console.error('Audit execution error:', err);
+      let errMsg = 'Failed to run database audit.';
+      if (!err.response) {
+        errMsg = 'Server not running. Please check if the server is running and accessible.';
+      } else if (err.response.status === 404) {
+        errMsg = 'Route not found. The audit endpoint /api/catalog-audit/run is not configured on the server.';
+      } else if (err.response.data && err.response.data.message) {
+        if (err.response.data.message.includes('Database connection failed')) {
+          errMsg = 'Database connection failed. Please ensure PostgreSQL is running and accessible.';
+        } else {
+          errMsg = `Audit execution failed: ${err.response.data.message}`;
+        }
+      }
+      toast.error(errMsg, { id: toastId });
     } finally {
       setLoading(false);
     }
   };
 
-  const healthScoreVal = report?.stats?.healthScore !== undefined ? report.stats.healthScore : 100;
+  const handleAcceptCategory = async (bookId, suggestedCategoryId, suggestedCategoryName) => {
+    try {
+      await booksAPI.updateCategory(bookId, suggestedCategoryId);
+      toast.success(`Book category updated to ${suggestCategoryName}!`);
+      
+      if (report) {
+        const oldWarnings = report.warnings !== undefined ? report.warnings : (report.incorrectCategoryWarnings || []);
+        const updatedWarnings = oldWarnings.filter(w => w.id !== bookId);
+        
+        const totalBooksVal = report.totalBooks !== undefined ? report.totalBooks : (report.stats?.totalBooks || 1);
+        const oldWarningsCount = oldWarnings.length;
+        const newWarningsCount = updatedWarnings.length;
+        const diff = oldWarningsCount - newWarningsCount;
+        
+        const oldHealth = report.healthScore !== undefined ? report.healthScore : (report.stats?.healthScore || 100);
+        const newHealth = Math.min(100, Math.round(oldHealth + (diff / totalBooksVal * 100)));
+        const oldFixed = report.totalFixed !== undefined ? report.totalFixed : (report.stats?.totalUpdated || 0);
+
+        setReport({
+          ...report,
+          warnings: updatedWarnings,
+          incorrectCategoryWarnings: updatedWarnings,
+          healthScore: newHealth,
+          totalFixed: oldFixed + 1,
+          stats: {
+            ...(report.stats || {}),
+            totalBooks: totalBooksVal,
+            totalUpdated: oldFixed + 1,
+            healthScore: newHealth,
+            missingInfoCount: report.missingInfo !== undefined ? report.missingInfo : (report.stats?.missingInfoCount || 0)
+          }
+        });
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to update category.');
+    }
+  };
+
+  const handleIgnoreWarning = (bookId) => {
+    if (report) {
+      const oldWarnings = report.warnings !== undefined ? report.warnings : (report.incorrectCategoryWarnings || []);
+      const updatedWarnings = oldWarnings.filter(w => w.id !== bookId);
+      setReport({
+        ...report,
+        warnings: updatedWarnings,
+        incorrectCategoryWarnings: updatedWarnings
+      });
+      toast.success('Warning ignored.');
+    }
+  };
+
+  // Map values correctly to show cards even before first audit
+  const totalBooks = report ? (report.totalBooks !== undefined ? report.totalBooks : report.stats?.totalBooks) : '—';
+  const healthScoreVal = report ? (report.healthScore !== undefined ? report.healthScore : report.stats?.healthScore) : '—';
+  const totalFixed = report ? (report.totalFixed !== undefined ? report.totalFixed : report.stats?.totalUpdated) : '—';
+  const missingInfo = report ? (report.missingInfo !== undefined ? report.missingInfo : report.stats?.missingInfoCount) : '—';
+  const incorrectWarnings = report ? (report.warnings !== undefined ? report.warnings : report.incorrectCategoryWarnings || []) : [];
 
   return (
     <div className="card mb-lg">
+      <style>{`
+        .audit-metric-grid {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 16px;
+          margin-bottom: 24px;
+        }
+        @media (max-width: 1024px) {
+          .audit-metric-grid {
+            grid-template-columns: repeat(2, 1fr);
+          }
+        }
+        @media (max-width: 600px) {
+          .audit-metric-grid {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        .audit-metric-card {
+          background: rgba(255, 255, 255, 0.03);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 16px;
+          aspect-ratio: 1 / 1;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .audit-metric-card:hover {
+          border-color: #F59E0B;
+          box-shadow: 0 0 15px rgba(245, 158, 11, 0.2);
+          transform: translateY(-2px);
+        }
+
+        .audit-metric-number {
+          font-size: 2.5rem;
+          font-weight: 700;
+          color: #ffffff;
+          margin-bottom: 8px;
+          font-family: 'Outfit', 'Inter', sans-serif;
+        }
+
+        .audit-metric-label {
+          font-size: 0.725rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          color: var(--color-text-muted, #a3a3a3);
+          letter-spacing: 0.05em;
+          text-align: center;
+        }
+
+        .audit-warning-panel {
+          background: rgba(255, 255, 255, 0.03);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 16px;
+          margin-top: 24px;
+          padding: 20px;
+        }
+
+        .audit-warning-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 16px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          padding-bottom: 12px;
+        }
+
+        .audit-warning-title {
+          font-size: 1rem;
+          font-weight: 600;
+          color: #fff;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .audit-table-container {
+          max-height: 400px;
+          overflow-y: auto;
+          border-radius: 8px;
+          border: 1px solid rgba(255, 255, 255, 0.05);
+          background: rgba(0, 0, 0, 0.15);
+        }
+
+        .audit-table {
+          width: 100%;
+          border-collapse: collapse;
+          text-align: left;
+        }
+
+        .audit-table th {
+          background: rgba(255, 255, 255, 0.03);
+          color: var(--color-text-muted, #a3a3a3);
+          font-size: 0.725rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          padding: 12px 16px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .audit-table td {
+          padding: 12px 16px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+          font-size: 0.85rem;
+          color: var(--color-text, #e5e5e5);
+          vertical-align: middle;
+        }
+
+        .audit-table tr:hover {
+          background: rgba(255, 255, 255, 0.01);
+        }
+
+        .confidence-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 4px 8px;
+          border-radius: 12px;
+          font-size: 0.725rem;
+          font-weight: 600;
+        }
+
+        .confidence-green {
+          background: rgba(76, 175, 80, 0.15);
+          color: #4CAF50;
+          border: 1px solid rgba(76, 175, 80, 0.3);
+        }
+
+        .confidence-yellow {
+          background: rgba(255, 193, 7, 0.15);
+          color: #FFC107;
+          border: 1px solid rgba(255, 193, 7, 0.3);
+        }
+
+        .confidence-red {
+          background: rgba(244, 67, 54, 0.15);
+          color: #F44336;
+          border: 1px solid rgba(244, 67, 54, 0.3);
+        }
+
+        .status-badge {
+          display: inline-flex;
+          padding: 4px 8px;
+          border-radius: 4px;
+          font-size: 0.7rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.02em;
+        }
+
+        .status-ready {
+          background: rgba(33, 150, 243, 0.15);
+          color: #2196F3;
+          border: 1px solid rgba(33, 150, 243, 0.3);
+        }
+
+        .status-verify {
+          background: rgba(158, 158, 158, 0.15);
+          color: #9E9E9E;
+          border: 1px solid rgba(158, 158, 158, 0.3);
+        }
+
+        .audit-actions {
+          display: flex;
+          gap: 6px;
+        }
+
+        .audit-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
+          padding: 6px 12px;
+          border-radius: 6px;
+          font-size: 0.75rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+          border: 1px solid transparent;
+        }
+
+        .audit-btn-accept {
+          background: rgba(76, 175, 114, 0.12);
+          color: #4CAF50;
+          border-color: rgba(76, 175, 114, 0.25);
+        }
+
+        .audit-btn-accept:hover:not(:disabled) {
+          background: #4CAF50;
+          color: #fff;
+        }
+
+        .audit-btn-ignore {
+          background: rgba(255, 255, 255, 0.04);
+          color: var(--color-text-muted, #a3a3a3);
+          border-color: rgba(255, 255, 255, 0.08);
+        }
+
+        .audit-btn-ignore:hover:not(:disabled) {
+          background: rgba(244, 67, 54, 0.12);
+          color: #F44336;
+          border-color: rgba(244, 67, 54, 0.25);
+        }
+
+        .audit-btn-details {
+          background: rgba(33, 150, 243, 0.1);
+          color: #2196F3;
+          border-color: rgba(33, 150, 243, 0.2);
+        }
+
+        .audit-btn-details:hover {
+          background: #2196F3;
+          color: #fff;
+        }
+      `}</style>
+
       <div className="flex items-center justify-between mb-sm">
         <div className="flex items-center gap-sm">
           <AlertTriangle size={18} color="var(--color-primary)" />
@@ -1101,7 +802,7 @@ function CatalogAuditSection() {
             id="audit-catalog-btn"
           >
             {loading ? (
-              <><RefreshCw size={14} className="spinner" style={{ marginRight: 6 }} /> Auditing...</>
+              <><RefreshCw size={14} className="spinner" style={{ marginRight: 6 }} /> Running Audit...</>
             ) : (
               <><AlertTriangle size={14} style={{ marginRight: 6 }} /> Run Catalog Audit</>
             )}
@@ -1113,40 +814,145 @@ function CatalogAuditSection() {
         Audits all library book records to detect and auto-correct missing, null, or zero prices (scaled by page count) and assign default GST tax rates based on format and category. Also detects books with missing essential information.
       </p>
 
-      {report && (
-        <div className="report-dashboard">
-          <div className="scan-stats-grid">
-            <div className="scan-stat-card">
-              <div className="scan-stat-val">{report.stats.totalBooks}</div>
-              <div className="scan-stat-label">Total Books</div>
-            </div>
-            <div className="scan-stat-card" style={{ borderColor: 'var(--color-primary)' }}>
-              <div className="scan-stat-val" style={{ color: 'var(--color-primary)' }}>{healthScoreVal}%</div>
-              <div className="scan-stat-label">Health Score</div>
-            </div>
-            <div className="scan-stat-card" style={{ borderColor: report.stats.totalUpdated > 0 ? 'rgba(76, 175, 114, 0.4)' : 'var(--color-border)' }}>
-              <div className="scan-stat-val" style={{ color: report.stats.totalUpdated > 0 ? 'var(--color-success)' : 'inherit' }}>{report.stats.totalUpdated}</div>
-              <div className="scan-stat-label">Total Fixed</div>
-            </div>
-            <div className="scan-stat-card" style={{ borderColor: report.stats.missingInfoCount > 0 ? 'rgba(224, 82, 82, 0.4)' : 'var(--color-border)' }}>
-              <div className="scan-stat-val" style={{ color: report.stats.missingInfoCount > 0 ? 'var(--color-danger)' : 'inherit' }}>{report.stats.missingInfoCount}</div>
-              <div className="scan-stat-label">Missing Info</div>
-            </div>
+      {/* 4 Responsive metric cards (always rendered) */}
+      <div className="audit-metric-grid">
+        <div className="audit-metric-card">
+          <div className="audit-metric-number">{totalBooks}</div>
+          <div className="audit-metric-label">Total Books</div>
+        </div>
+        <div className="audit-metric-card">
+          <div className="audit-metric-number" style={{ color: healthScoreVal !== '—' ? '#F59E0B' : '#ffffff' }}>
+            {healthScoreVal}{healthScoreVal !== '—' ? '%' : ''}
           </div>
+          <div className="audit-metric-label">Health Score</div>
+        </div>
+        <div className="audit-metric-card">
+          <div className="audit-metric-number">{totalFixed}</div>
+          <div className="audit-metric-label">Total Fixed</div>
+        </div>
+        <div className="audit-metric-card">
+          <div className="audit-metric-number">{missingInfo}</div>
+          <div className="audit-metric-label">Missing Info</div>
+        </div>
+      </div>
 
+      {/* Incorrect Category Warnings scrollable table panel */}
+      <div className="audit-warning-panel">
+        <div className="audit-warning-header">
+          <div className="audit-warning-title">
+            <AlertTriangle size={18} color="#F59E0B" />
+            <span>Incorrect Category Warnings ({incorrectWarnings.length})</span>
+          </div>
+        </div>
+        
+        {!report ? (
+          <div style={{ color: 'var(--color-text-muted)', fontSize: '0.875rem', padding: '24px', textAlign: 'center' }}>
+            No audit has been run yet. Click "Run Catalog Audit" to begin scanning the database.
+          </div>
+        ) : incorrectWarnings.length === 0 ? (
+          <div style={{ color: 'var(--color-text-muted)', fontSize: '0.875rem', padding: '24px', textAlign: 'center' }}>
+            No incorrect category warnings found. All book categories appear correct.
+          </div>
+        ) : (
+          <div className="audit-table-container">
+            <table className="audit-table">
+              <thead>
+                <tr>
+                  <th>Book Title</th>
+                  <th>Author</th>
+                  <th>Suggested Category</th>
+                  <th>Confidence Score</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: 'right' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {incorrectWarnings.map((bk) => (
+                  <tr key={bk.id}>
+                    <td style={{ fontWeight: 600 }}>{bk.title}</td>
+                    <td>{bk.author}</td>
+                    <td>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                        {bk.currentCategory || 'Uncategorized'} &rarr;
+                      </div>
+                      <div style={{ color: 'var(--color-success)', fontWeight: 600 }}>
+                        {bk.suggestedCategory}
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`confidence-badge ${
+                        bk.confidence >= 80 ? 'confidence-green' :
+                        bk.confidence >= 50 ? 'confidence-yellow' : 'confidence-red'
+                      }`}>
+                        {bk.confidence}%
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`status-badge ${
+                        bk.confidence >= 80 ? 'status-ready' : 'status-verify'
+                      }`}>
+                        {bk.status}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="audit-actions" style={{ justifyContent: 'flex-end' }}>
+                        <button
+                          className="audit-btn audit-btn-accept"
+                          onClick={() => handleAcceptCategory(bk.id, bk.suggestedCategoryId, bk.suggestedCategory)}
+                          title="Accept Suggested Category"
+                          disabled={!isAdmin}
+                          style={{
+                            cursor: !isAdmin ? 'not-allowed' : 'pointer',
+                            opacity: !isAdmin ? 0.6 : 1
+                          }}
+                        >
+                          <Check size={12} /> Accept
+                        </button>
+                        <button
+                          className="audit-btn audit-btn-ignore"
+                          onClick={() => handleIgnoreWarning(bk.id)}
+                          title="Ignore Warning"
+                          disabled={!isAdmin}
+                          style={{
+                            cursor: !isAdmin ? 'not-allowed' : 'pointer',
+                            opacity: !isAdmin ? 0.6 : 1
+                          }}
+                        >
+                          <X size={12} /> Ignore
+                        </button>
+                        <button
+                          className="audit-btn audit-btn-details"
+                          onClick={() => setSelectedWarning(bk)}
+                          title="View Details"
+                        >
+                          <Info size={12} /> Details
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Other audit detail lists */}
+      {report && (
+        <div style={{ display: 'grid', gap: '20px', marginTop: '24px' }}>
           {/* Updated Prices List */}
           {report.updatedPrices && report.updatedPrices.length > 0 && (
-            <div className="report-section">
-              <div className="report-title" style={{ color: 'var(--color-success)' }}>
-                <CheckCircle2 size={14} /> Auto-Corrected Book Prices ({report.updatedPrices.length})
+            <div className="report-section" style={{ background: 'rgba(255, 255, 255, 0.02)', borderRadius: '12px', border: '1px solid rgba(255, 255, 255, 0.05)', padding: '16px' }}>
+              <div className="report-title" style={{ color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontWeight: 600 }}>
+                <CheckCircle2 size={16} /> Auto-Corrected Book Prices ({report.updatedPrices.length})
               </div>
-              <div className="list-container">
+              <div className="list-container" style={{ display: 'grid', gap: '8px' }}>
                 {report.updatedPrices.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
+                  <div key={idx} className="list-row" style={{ display: 'flex', justifyContent: 'between', padding: '8px 12px', background: 'rgba(0,0,0,0.15)', borderRadius: '6px' }}>
+                    <div style={{ flex: 1 }}>
                       <strong>{bk.title}</strong> by {bk.author}
                     </div>
-                    <div style={{ color: 'var(--color-text-muted)' }}>
+                    <div style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
                       ₹{parseFloat(bk.oldPrice).toFixed(2)} &rarr; <span style={{ color: 'var(--color-success)', fontWeight: 600 }}>₹{parseFloat(bk.newPrice).toFixed(2)}</span> ({bk.priceType})
                     </div>
                   </div>
@@ -1157,17 +963,17 @@ function CatalogAuditSection() {
 
           {/* Updated Taxes List */}
           {report.updatedTaxes && report.updatedTaxes.length > 0 && (
-            <div className="report-section">
-              <div className="report-title" style={{ color: 'var(--color-success)' }}>
-                <CheckCircle2 size={14} /> Auto-Corrected Tax Rates ({report.updatedTaxes.length})
+            <div className="report-section" style={{ background: 'rgba(255, 255, 255, 0.02)', borderRadius: '12px', border: '1px solid rgba(255, 255, 255, 0.05)', padding: '16px' }}>
+              <div className="report-title" style={{ color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontWeight: 600 }}>
+                <CheckCircle2 size={16} /> Auto-Corrected Tax Rates ({report.updatedTaxes.length})
               </div>
-              <div className="list-container">
+              <div className="list-container" style={{ display: 'grid', gap: '8px' }}>
                 {report.updatedTaxes.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
+                  <div key={idx} className="list-row" style={{ display: 'flex', justifyContent: 'between', padding: '8px 12px', background: 'rgba(0,0,0,0.15)', borderRadius: '6px' }}>
+                    <div style={{ flex: 1 }}>
                       <strong>{bk.title}</strong> by {bk.author}
                     </div>
-                    <div style={{ color: 'var(--color-text-muted)' }}>
+                    <div style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
                       {parseFloat(bk.oldTax).toFixed(1)}% &rarr; <span style={{ color: 'var(--color-success)', fontWeight: 600 }}>{parseFloat(bk.newTax).toFixed(1)}%</span>
                     </div>
                   </div>
@@ -1178,17 +984,17 @@ function CatalogAuditSection() {
 
           {/* Missing Data Warnings List */}
           {report.missingDataWarnings && report.missingDataWarnings.length > 0 && (
-            <div className="report-section" style={{ borderColor: 'rgba(224, 82, 82, 0.3)' }}>
-              <div className="report-title" style={{ color: 'var(--color-danger)' }}>
-                <AlertTriangle size={14} /> Missing Essential Fields ({report.missingDataWarnings.length})
+            <div className="report-section" style={{ background: 'rgba(255, 255, 255, 0.02)', borderRadius: '12px', border: '1px solid rgba(224, 82, 82, 0.2)', padding: '16px' }}>
+              <div className="report-title" style={{ color: 'var(--color-danger)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontWeight: 600 }}>
+                <AlertTriangle size={16} /> Missing Essential Fields ({report.missingDataWarnings.length})
               </div>
-              <div className="list-container">
+              <div className="list-container" style={{ display: 'grid', gap: '8px' }}>
                 {report.missingDataWarnings.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
+                  <div key={idx} className="list-row" style={{ display: 'flex', justifyContent: 'between', padding: '8px 12px', background: 'rgba(0,0,0,0.15)', borderRadius: '6px' }}>
+                    <div style={{ flex: 1 }}>
                       <strong>{bk.title}</strong> by {bk.author}
                     </div>
-                    <div style={{ color: 'var(--color-danger)', fontWeight: 600 }}>
+                    <div style={{ color: 'var(--color-danger)', fontWeight: 600, fontSize: '0.85rem' }}>
                       Missing: {bk.missingFields.join(', ')}
                     </div>
                   </div>
@@ -1199,39 +1005,18 @@ function CatalogAuditSection() {
 
           {/* Duplicate Warnings List */}
           {report.duplicateWarnings && report.duplicateWarnings.length > 0 && (
-            <div className="report-section" style={{ borderColor: 'rgba(224, 82, 82, 0.3)' }}>
-              <div className="report-title" style={{ color: 'var(--color-danger)' }}>
-                <AlertTriangle size={14} /> Duplicate Catalog Records ({report.duplicateWarnings.length})
+            <div className="report-section" style={{ background: 'rgba(255, 255, 255, 0.02)', borderRadius: '12px', border: '1px solid rgba(224, 82, 82, 0.2)', padding: '16px' }}>
+              <div className="report-title" style={{ color: 'var(--color-danger)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontWeight: 600 }}>
+                <AlertTriangle size={16} /> Duplicate Catalog Records ({report.duplicateWarnings.length})
               </div>
-              <div className="list-container">
+              <div className="list-container" style={{ display: 'grid', gap: '8px' }}>
                 {report.duplicateWarnings.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
+                  <div key={idx} className="list-row" style={{ display: 'flex', justifyContent: 'between', padding: '8px 12px', background: 'rgba(0,0,0,0.15)', borderRadius: '6px' }}>
+                    <div style={{ flex: 1 }}>
                       <strong>{bk.title}</strong> by {bk.author}
                     </div>
-                    <div style={{ color: 'var(--color-text-muted)' }}>
+                    <div style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
                       {bk.isbn ? `ISBN: ${bk.isbn}` : 'Matching title and author'}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Incorrect Category Warnings List */}
-          {report.incorrectCategoryWarnings && report.incorrectCategoryWarnings.length > 0 && (
-            <div className="report-section" style={{ borderColor: 'rgba(244, 162, 97, 0.3)' }}>
-              <div className="report-title" style={{ color: 'var(--color-warning)' }}>
-                <AlertTriangle size={14} /> Incorrect Category Warnings ({report.incorrectCategoryWarnings.length})
-              </div>
-              <div className="list-container">
-                {report.incorrectCategoryWarnings.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
-                      <strong>{bk.title}</strong> by {bk.author}
-                    </div>
-                    <div style={{ color: 'var(--color-warning)' }}>
-                      Needs verification (Confidence: {parseFloat(bk.confidence).toFixed(2)})
                     </div>
                   </div>
                 ))}
@@ -1241,17 +1026,17 @@ function CatalogAuditSection() {
 
           {/* Missing ISBN Warnings List */}
           {report.missingIsbnWarnings && report.missingIsbnWarnings.length > 0 && (
-            <div className="report-section" style={{ borderColor: 'rgba(91, 155, 213, 0.3)' }}>
-              <div className="report-title" style={{ color: 'var(--color-info)' }}>
-                <AlertTriangle size={14} /> Missing ISBN Identifiers ({report.missingIsbnWarnings.length})
+            <div className="report-section" style={{ background: 'rgba(255, 255, 255, 0.02)', borderRadius: '12px', border: '1px solid rgba(91, 155, 213, 0.2)', padding: '16px' }}>
+              <div className="report-title" style={{ color: 'var(--color-info)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontWeight: 600 }}>
+                <AlertTriangle size={16} /> Missing ISBN Identifiers ({report.missingIsbnWarnings.length})
               </div>
-              <div className="list-container">
+              <div className="list-container" style={{ display: 'grid', gap: '8px' }}>
                 {report.missingIsbnWarnings.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
+                  <div key={idx} className="list-row" style={{ display: 'flex', justifyContent: 'between', padding: '8px 12px', background: 'rgba(0,0,0,0.15)', borderRadius: '6px' }}>
+                    <div style={{ flex: 1 }}>
                       <strong>{bk.title}</strong> by {bk.author}
                     </div>
-                    <div style={{ color: 'var(--color-text-muted)', fontStyle: 'italic' }}>
+                    <div style={{ color: 'var(--color-text-muted)', fontStyle: 'italic', fontSize: '0.85rem' }}>
                       Required for scanning/barcode features
                     </div>
                   </div>
@@ -1262,17 +1047,17 @@ function CatalogAuditSection() {
 
           {/* Missing Cover Image Warnings List */}
           {report.missingCoverImageWarnings && report.missingCoverImageWarnings.length > 0 && (
-            <div className="report-section">
-              <div className="report-title" style={{ color: 'var(--color-text-secondary)' }}>
-                <AlertTriangle size={14} /> Missing Cover Images ({report.missingCoverImageWarnings.length})
+            <div className="report-section" style={{ background: 'rgba(255, 255, 255, 0.02)', borderRadius: '12px', border: '1px solid rgba(255, 255, 255, 0.05)', padding: '16px' }}>
+              <div className="report-title" style={{ color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontWeight: 600 }}>
+                <AlertTriangle size={16} /> Missing Cover Images ({report.missingCoverImageWarnings.length})
               </div>
-              <div className="list-container">
+              <div className="list-container" style={{ display: 'grid', gap: '8px' }}>
                 {report.missingCoverImageWarnings.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
+                  <div key={idx} className="list-row" style={{ display: 'flex', justifyContent: 'between', padding: '8px 12px', background: 'rgba(0,0,0,0.15)', borderRadius: '6px' }}>
+                    <div style={{ flex: 1 }}>
                       <strong>{bk.title}</strong> by {bk.author}
                     </div>
-                    <div style={{ color: 'var(--color-text-muted)' }}>
+                    <div style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
                       Using default catalog placeholder
                     </div>
                   </div>
@@ -1283,17 +1068,17 @@ function CatalogAuditSection() {
 
           {/* Inventory Inconsistencies List */}
           {report.inventoryInconsistencies && report.inventoryInconsistencies.length > 0 && (
-            <div className="report-section" style={{ borderColor: 'rgba(224, 82, 82, 0.3)' }}>
-              <div className="report-title" style={{ color: 'var(--color-danger)' }}>
-                <AlertTriangle size={14} /> Inventory Inconsistencies ({report.inventoryInconsistencies.length})
+            <div className="report-section" style={{ background: 'rgba(255, 255, 255, 0.02)', borderRadius: '12px', border: '1px solid rgba(224, 82, 82, 0.2)', padding: '16px' }}>
+              <div className="report-title" style={{ color: 'var(--color-danger)', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontWeight: 600 }}>
+                <AlertTriangle size={16} /> Inventory Inconsistencies ({report.inventoryInconsistencies.length})
               </div>
-              <div className="list-container">
+              <div className="list-container" style={{ display: 'grid', gap: '8px' }}>
                 {report.inventoryInconsistencies.map((bk, idx) => (
-                  <div key={idx} className="list-row">
-                    <div>
+                  <div key={idx} className="list-row" style={{ display: 'flex', justifyContent: 'between', padding: '8px 12px', background: 'rgba(0,0,0,0.15)', borderRadius: '6px' }}>
+                    <div style={{ flex: 1 }}>
                       <strong>{bk.title}</strong> by {bk.author}
                     </div>
-                    <div style={{ color: 'var(--color-danger)' }}>
+                    <div style={{ color: 'var(--color-danger)', fontSize: '0.85rem' }}>
                       Current Stock: {bk.stock_qty !== null ? bk.stock_qty : 'Unspecified'}
                     </div>
                   </div>
@@ -1303,6 +1088,96 @@ function CatalogAuditSection() {
           )}
         </div>
       )}
+
+      {/* Category Warning Details Modal */}
+      <Modal
+        isOpen={selectedWarning !== null}
+        onClose={() => setSelectedWarning(null)}
+        title="Book Category Audit Details"
+        footer={
+          <>
+            <button className="btn btn-ghost" onClick={() => setSelectedWarning(null)}>Close</button>
+            <button
+              className="btn btn-danger btn-sm"
+              style={{ marginRight: '8px' }}
+              disabled={!isAdmin}
+              onClick={() => {
+                const bk = selectedWarning;
+                setSelectedWarning(null);
+                handleIgnoreWarning(bk.id);
+              }}
+            >
+              Ignore Warning
+            </button>
+            <button
+              className="btn btn-primary btn-sm"
+              disabled={!isAdmin}
+              onClick={async () => {
+                const bk = selectedWarning;
+                setSelectedWarning(null);
+                await handleAcceptCategory(bk.id, bk.suggestedCategoryId, bk.suggestedCategory);
+              }}
+            >
+              Accept Suggestion
+            </button>
+          </>
+        }
+      >
+        {selectedWarning && (
+          <div style={{ color: 'var(--color-text)', display: 'grid', gap: 'var(--spacing-md)' }}>
+            <div>
+              <h4 style={{ margin: '0 0 4px 0', fontSize: '1.05rem', fontWeight: 600 }}>{selectedWarning.title}</h4>
+              <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--color-text-secondary)' }}>by {selectedWarning.author}</p>
+            </div>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', background: 'var(--color-surface-2)', padding: '12px', borderRadius: '8px', border: '1px solid var(--color-border)' }}>
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>ISBN</span>
+                <div style={{ fontSize: '0.85rem', fontWeight: 500, marginTop: '2px' }}>{selectedWarning.isbn || 'N/A'}</div>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Confidence Score</span>
+                <div style={{ fontSize: '0.85rem', fontWeight: 500, marginTop: '2px' }}>
+                  <span className={`confidence-badge ${
+                    selectedWarning.confidence >= 80 ? 'confidence-green' :
+                    selectedWarning.confidence >= 50 ? 'confidence-yellow' : 'confidence-red'
+                  }`} style={{ padding: '2px 6px', borderRadius: '8px' }}>
+                    {selectedWarning.confidence}%
+                  </span>
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Current Category</span>
+                <div style={{ fontSize: '0.85rem', fontWeight: 500, marginTop: '2px', color: 'var(--color-danger)' }}>{selectedWarning.currentCategory || 'None'}</div>
+              </div>
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Suggested Category</span>
+                <div style={{ fontSize: '0.85rem', fontWeight: 500, marginTop: '2px', color: 'var(--color-success)' }}>{selectedWarning.suggestedCategory}</div>
+              </div>
+            </div>
+
+            {selectedWarning.tags && (
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Tags</span>
+                <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '4px' }}>
+                  {selectedWarning.tags.split(',').map((t, idx) => (
+                    <Badge key={idx} type="info" style={{ fontSize: '0.7rem' }}>{t.trim()}</Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedWarning.description && (
+              <div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase' }}>Description</span>
+                <p style={{ margin: '4px 0 0 0', fontSize: '0.85rem', lineHeight: '1.4', maxHeight: '120px', overflowY: 'auto', background: 'var(--color-surface-2)', padding: '8px', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
+                  {selectedWarning.description}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -1470,7 +1345,7 @@ function StoreInformationSection() {
       setForm(res.data);
       toast.success('Store settings updated successfully!');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to update store settings.');
+      if (!err.hasGlobalToast) toast.error(err.response?.data?.message || 'Failed to update store settings.');
     } finally {
       setSaving(false);
     }
@@ -1575,7 +1450,7 @@ function PaymentSettingsSection() {
       setForm(res.data);
       toast.success('Payment settings updated successfully!');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to update payment settings.');
+      if (!err.hasGlobalToast) toast.error(err.response?.data?.message || 'Failed to update payment settings.');
     } finally {
       setSaving(false);
     }
@@ -1710,7 +1585,6 @@ export default function SettingsPage() {
       )}
 
       <CategoriesSection />
-      <CategoryVerificationSection />
       <CatalogAuditSection />
     </div>
   );

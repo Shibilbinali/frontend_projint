@@ -25,11 +25,13 @@ export default function BookDetailsModal({ isOpen, onClose, book }) {
   
   const getImageUrl = (path) => {
     if (!path) return '';
-    if (path.startsWith('http://') || path.startsWith('https://')) return path;
-    return `${API_URL}${path}`;
+    const separator = path.includes('?') ? '&' : '?';
+    const timestamp = book.updated_at ? new Date(book.updated_at).getTime() : Date.now();
+    if (path.startsWith('http://') || path.startsWith('https://')) return `${path}${separator}v=${timestamp}`;
+    return `${API_URL}${path}${separator}v=${timestamp}`;
   };
 
-  const frontCover = getImageUrl(book.cover_image || book.front_cover_url || book.cover_image_url);
+  const frontCover = getImageUrl(book.front_cover_url || book.cover_image || book.cover_image_url);
   const backCover = getImageUrl(book.back_cover_url);
   const currentCover = activeTab === 'front' ? frontCover : backCover;
 

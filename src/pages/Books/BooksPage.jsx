@@ -25,6 +25,9 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
   const [fetching, setFetching] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
+  const [frontCoverPreview, setFrontCoverPreview] = useState(null);
+  const [backCoverPreview, setBackCoverPreview] = useState(null);
+
   // Bulk mode state
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -37,6 +40,8 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
   const pollingRef = useRef();
 
   useEffect(() => {
+    setFrontCoverPreview(null);
+    setBackCoverPreview(null);
     if (book) {
       setImportMode('single');
       setForm({
@@ -46,7 +51,7 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
         stock_qty: book.stock_qty || '', low_stock_threshold: book.low_stock_threshold || '5',
         publisher: book.publisher || '', published_year: book.published_year || '',
         description: book.description || '', cover_image_url: book.cover_image_url || '',
-        front_cover_url: book.cover_image || book.front_cover_url || '', back_cover_url: book.back_cover_url || '',
+        front_cover_url: book.front_cover_url || book.cover_image || '', back_cover_url: book.back_cover_url || '',
         cover_source: book.cover_source || 'None', edition: book.edition || '',
         tax_rate: book.tax_rate !== undefined ? String(parseFloat(book.tax_rate) || 0) : '0',
         reading_age: book.reading_age || 'All Ages',
@@ -140,41 +145,29 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
           setUploadProgress(Math.round((progressEvent.loaded * 100) / progressEvent.total));
         }
       });
-      setSession({
-        id: res.data.session_id,
-        status: 'processing',
-        success_count: 0,
-        updated_count: 0,
-        skipped_count: 0,
-        failed_count: 0,
-        total_rows: preview ? preview.total_rows : 0
-      });
-      startPolling(res.data.session_id);
+      
+      const summary = res.data.summary;
+      toast.success(
+        <div>
+          <strong>Import Completed</strong><br/>
+          Total Books: {summary.total_rows}<br/>
+          Imported Successfully: {summary.imported_rows}<br/>
+          Duplicate/Skipped: {summary.duplicate_rows}<br/>
+          Failed Records: {summary.failed_rows}
+        </div>,
+        { duration: 5000 }
+      );
+      
+      setFile(null);
+      setPreview(null);
+      setSession(null);
+      onSaved();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Import failed.');
-      setSaving(false);
     } finally {
+      setSaving(false);
       setUploadProgress(0);
     }
-  };
-
-  const startPolling = (sessionId) => {
-    if (pollingRef.current) clearInterval(pollingRef.current);
-    pollingRef.current = setInterval(async () => {
-      try {
-        const res = await booksAPI.getImportSessionStatus(sessionId);
-        const sess = res.data;
-        setSession(sess);
-        if (sess.status === 'completed' || sess.status === 'failed') {
-          clearInterval(pollingRef.current);
-          setSaving(false);
-          onSaved();
-          toast.success('Bulk book import job finished!');
-        }
-      } catch {
-        // Ignored
-      }
-    }, 1000);
   };
 
   const handleDownloadErrors = (sess) => {
@@ -213,29 +206,66 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
 
     const _URL = window.URL || window.webkitURL;
     const img = new Image();
-    img.src = _URL.createObjectURL(file);
+    const objectUrl = _URL.createObjectURL(file);
+    img.src = objectUrl;
     img.onload = async function() {
       if (this.width < 100 || this.height < 100) {
         toast.error(`Image resolution is too low (${this.width}x${this.height}). Minimum is 100x100 pixels.`);
         return;
       }
 
+      // Immediately set the cover preview and hide the old cover
+      if (type === 'front') {
+        setFrontCoverPreview(objectUrl);
+      } else {
+        setBackCoverPreview(objectUrl);
+      }
+
       const formData = new FormData();
       formData.append('image', file);
 
       const toastId = toast.loading('Uploading cover...');
+      setUploadProgress(0);
+
       try {
-        const res = await booksAPI.upload(formData);
-        const url = res.data.url;
+        let url = '';
+        if (book) {
+          // Existing book: PATCH replacement
+          const res = await booksAPI.updateCoverImage(book.id, formData, type, (progressEvent) => {
+            if (progressEvent.total) {
+              setUploadProgress(Math.round((progressEvent.loaded * 100) / progressEvent.total));
+            }
+          });
+          url = res.data.url;
+          toast.success('Cover image updated successfully.', { id: toastId });
+        } else {
+          // New book: POST upload
+          const res = await booksAPI.upload(formData, (progressEvent) => {
+            if (progressEvent.total) {
+              setUploadProgress(Math.round((progressEvent.loaded * 100) / progressEvent.total));
+            }
+          });
+          url = res.data.url;
+          toast.success('Cover uploaded successfully!', { id: toastId });
+        }
+
+        // Update form state with the new URL path
         setForm((prev) => ({
           ...prev,
           [type === 'front' ? 'front_cover_url' : 'back_cover_url']: url,
           ...(type === 'front' && { cover_image_url: url }),
           ...(type === 'front' && { cover_source: 'Uploaded' })
         }));
-        toast.success('Cover uploaded successfully!', { id: toastId });
       } catch (err) {
+        // Reset preview if upload failed
+        if (type === 'front') {
+          setFrontCoverPreview(null);
+        } else {
+          setBackCoverPreview(null);
+        }
         toast.error(err.response?.data?.message || 'Failed to upload cover.', { id: toastId });
+      } finally {
+        setUploadProgress(0);
       }
     };
   };
@@ -369,9 +399,21 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
   const renderCoverControl = (type, label) => {
     const key = type === 'front' ? 'front_cover_url' : 'back_cover_url';
     const currentUrl = form[key];
+    const previewUrl = type === 'front' ? frontCoverPreview : backCoverPreview;
     
     const API_URL = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : 'http://localhost:5000';
-    const resolvedUrl = currentUrl && !currentUrl.startsWith('http') ? `${API_URL}${currentUrl}` : currentUrl;
+    
+    // Use previewUrl if available, otherwise use resolved url
+    let resolvedUrl = '';
+    if (previewUrl) {
+      resolvedUrl = previewUrl;
+    } else if (currentUrl) {
+      const separator = currentUrl.includes('?') ? '&' : '?';
+      const timestamp = book?.updated_at ? new Date(book.updated_at).getTime() : Date.now();
+      resolvedUrl = currentUrl.startsWith('http') 
+        ? `${currentUrl}${separator}v=${timestamp}` 
+        : `${API_URL}${currentUrl}${separator}v=${timestamp}`;
+    }
 
     return (
       <div className="cover-upload-control" style={{ flex: 1 }}>
@@ -383,17 +425,28 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
             border: '1px solid var(--color-border)',
             overflow: 'hidden',
             background: 'var(--color-surface-3)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center'
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            position: 'relative'
           }}>
-            {currentUrl ? (
+            {resolvedUrl ? (
               <img src={resolvedUrl} alt={label} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             ) : (
               <span style={{ fontSize: '1.2rem', color: 'var(--color-text-muted)' }}>📖</span>
             )}
+            
+            {uploadProgress > 0 && uploadProgress < 100 && (
+              <div style={{
+                position: 'absolute', bottom: 0, left: 0, right: 0,
+                background: 'rgba(0,0,0,0.7)', padding: '2px',
+                fontSize: '0.65rem', color: '#fff', textAlign: 'center'
+              }}>
+                {uploadProgress}%
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-xs)' }}>
             <label className="btn btn-secondary btn-sm" style={{ cursor: 'pointer', textAlign: 'center', fontSize: '0.75rem', padding: '4px 8px' }}>
-              {currentUrl ? 'Replace' : 'Upload'}
+              {resolvedUrl ? 'Replace' : 'Upload'}
               <input
                 type="file"
                 accept="image/*"
@@ -401,12 +454,16 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
                 style={{ display: 'none' }}
               />
             </label>
-            {currentUrl && (
+            {resolvedUrl && (
               <button
                 type="button"
                 className="btn btn-danger btn-sm"
                 style={{ fontSize: '0.75rem', padding: '4px 8px' }}
-                onClick={() => setForm((prev) => ({ ...prev, [key]: '', ...(type === 'front' && { cover_source: 'None' }) }))}
+                onClick={() => {
+                  if (type === 'front') setFrontCoverPreview(null);
+                  else setBackCoverPreview(null);
+                  setForm((prev) => ({ ...prev, [key]: '', ...(type === 'front' && { cover_source: 'None' }) }));
+                }}
               >
                 Remove
               </button>
@@ -461,7 +518,7 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
           <button
             className="btn btn-primary"
             onClick={handleImport}
-            disabled={saving || preview.invalid_rows > 0}
+            disabled={saving || preview.invalid_rows > 0 || preview.preview.some(r => r.status === 'Warning' || r.status === 'Error')}
           >
             {saving ? (uploadProgress > 0 && uploadProgress < 100 ? `Uploading... ${uploadProgress}%` : 'Importing...') : 'Import All Books'}
           </button>
@@ -699,10 +756,10 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
                         <tr>
                           <th>Row</th>
                           <th>Title</th>
-                          <th>Author</th>
-                          <th>ISBN</th>
-                          <th>Category</th>
-                          <th>Price</th>
+                          <th>Imported Category</th>
+                          <th>Matched Category</th>
+                          <th>Match Type</th>
+                          <th>Confidence</th>
                           <th>Errors / Status</th>
                         </tr>
                       </thead>
@@ -710,18 +767,32 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
                         {preview.preview.map((row, ridx) => {
                           const rowErrObj = preview.errors.find(e => e.row === row._row);
                           const hasErr = !!rowErrObj;
+                          const hasWarning = row.status === 'Warning';
+                          
                           return (
-                            <tr key={row._row} style={{ background: hasErr ? 'rgba(239,68,68,0.04)' : 'none' }}>
+                            <tr key={row._row} style={{ background: hasErr ? 'rgba(239,68,68,0.04)' : (hasWarning ? 'rgba(245,158,11,0.04)' : 'none') }}>
                               <td>{row._row}</td>
-                              <td style={{ fontWeight: 600 }}>{row.title || '—'}</td>
-                              <td>{row.author || '—'}</td>
-                              <td>{row.isbn || '—'}</td>
+                              <td style={{ fontWeight: 600, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row.title}>{row.title || '—'}</td>
                               <td>{row.category || '—'}</td>
-                              <td>₹{row.selling_price}</td>
+                              <td style={{ fontWeight: 600 }}>{row.matched_category || '—'}</td>
+                              <td>
+                                <Badge variant={row.match_type === 'Exact Match' ? 'success' : (row.match_type === 'Alias Match' ? 'info' : (row.match_type === 'New Category' ? 'primary' : 'warning'))}>
+                                  {row.match_type}
+                                </Badge>
+                              </td>
+                              <td>
+                                <span style={{ color: row.confidence >= 90 ? 'var(--color-success)' : 'var(--color-warning)', fontWeight: 600 }}>
+                                  {row.confidence}%
+                                </span>
+                              </td>
                               <td>
                                 {hasErr ? (
                                   <div style={{ color: 'var(--color-danger)', fontSize: '0.7rem' }}>
                                     {rowErrObj.errors.join('; ')}
+                                  </div>
+                                ) : hasWarning ? (
+                                  <div style={{ color: 'var(--color-warning)', fontSize: '0.7rem', fontWeight: 600 }}>
+                                    {row.warning_message}
                                   </div>
                                 ) : (
                                   <span style={{ color: 'var(--color-success)', fontWeight: 600 }}>Valid</span>
@@ -1321,18 +1392,34 @@ export default function BooksPage() {
     }
   };
 
+  const [error, setError] = useState(false);
+
   const loadData = useCallback(async () => {
     try {
+      setError(false);
       const [booksRes, catsRes] = await Promise.all([
         booksAPI.getAll({ search, category_id: selectedCategory }),
         categoriesAPI.getAll()
       ]);
-      setBooks(booksRes.data.books || []);
+      const fetchedBooks = booksRes.data.books || [];
+      setBooks(fetchedBooks);
       setCategories(catsRes.data || []);
+
+      // If the book details modal is currently open, refresh its data reference
+      if (detailsBook) {
+        const freshDetails = fetchedBooks.find(b => b.id === detailsBook.id);
+        if (freshDetails) {
+          setDetailsBook(freshDetails);
+        }
+      }
+
       window.dispatchEvent(new CustomEvent('inventory-updated'));
     } catch (err) {
-      const errMsg = err.response?.data?.message || err.message || 'Failed to load books';
-      toast.error(`Failed to load books: ${errMsg}`);
+      setError(true);
+      if (!err.hasGlobalToast) {
+        const errMsg = err.response?.data?.message || err.message || 'Failed to load books';
+        toast.error(`Failed to load books: ${errMsg}`);
+      }
       console.error('📚 [Books Page Load Data Error]');
       console.error(`- Request URL: ${err.config ? `${err.config.baseURL || ''}${err.config.url}` : 'N/A'}`);
       console.error(`- Response Status: ${err.response?.status || 'Network Error / Timeout / CORS'}`);
@@ -1341,7 +1428,7 @@ export default function BooksPage() {
     } finally {
       setLoading(false);
     }
-  }, [search, selectedCategory]);
+  }, [search, selectedCategory, detailsBook]);
 
   useEffect(() => { setLoading(true); loadData(); }, [loadData]);
 
@@ -1363,11 +1450,13 @@ export default function BooksPage() {
   };
 
   const getCoverUrl = (book) => {
-    const url = book.cover_image || book.front_cover_url || book.cover_image_url;
+    const url = book.front_cover_url || book.cover_image || book.cover_image_url;
     if (!url) return '';
-    if (url.startsWith('http')) return url;
+    const separator = url.includes('?') ? '&' : '?';
+    const timestamp = book.updated_at ? new Date(book.updated_at).getTime() : Date.now();
+    if (url.startsWith('http')) return `${url}${separator}v=${timestamp}`;
     const API_URL = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : 'http://localhost:5000';
-    return `${API_URL}${url}`;
+    return `${API_URL}${url}${separator}v=${timestamp}`;
   };
 
   if (loading) return <Spinner text="Loading books..." />;
@@ -1431,7 +1520,16 @@ export default function BooksPage() {
       </div>
 
       {/* Books Grid */}
-      {books.length === 0 ? (
+      {error ? (
+        <div className="empty-state">
+          <div className="empty-state-icon"><AlertTriangle size={48} color="var(--color-danger)" /></div>
+          <h3>Failed to load books</h3>
+          <p>We couldn't reach the server. Please check your connection.</p>
+          <button className="btn btn-primary" onClick={() => { setLoading(true); loadData(); }}>
+            Retry Connection
+          </button>
+        </div>
+      ) : books.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state-icon"><BookOpen size={48} /></div>
           <h3>No books found</h3>

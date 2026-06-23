@@ -23,6 +23,7 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
   });
   const [saving, setSaving] = useState(false);
   const [fetching, setFetching] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   // Bulk mode state
   const [file, setFile] = useState(null);
@@ -109,25 +110,36 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
   const handlePreview = async () => {
     if (!file) return;
     setFetching(true);
+    setUploadProgress(0);
     const fd = new FormData();
     fd.append('file', file);
     try {
-      const res = await booksAPI.preview(fd);
+      const res = await booksAPI.preview(fd, (progressEvent) => {
+        if (progressEvent.total) {
+          setUploadProgress(Math.round((progressEvent.loaded * 100) / progressEvent.total));
+        }
+      });
       setPreview(res.data);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Preview failed.');
     } finally {
       setFetching(false);
+      setUploadProgress(0);
     }
   };
 
   const handleImport = async () => {
     if (!file) return;
     setSaving(true);
+    setUploadProgress(0);
     const fd = new FormData();
     fd.append('file', file);
     try {
-      const res = await booksAPI.import(fd, duplicateMode);
+      const res = await booksAPI.import(fd, duplicateMode, (progressEvent) => {
+        if (progressEvent.total) {
+          setUploadProgress(Math.round((progressEvent.loaded * 100) / progressEvent.total));
+        }
+      });
       setSession({
         id: res.data.session_id,
         status: 'processing',
@@ -141,6 +153,8 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
     } catch (err) {
       toast.error(err.response?.data?.message || 'Import failed.');
       setSaving(false);
+    } finally {
+      setUploadProgress(0);
     }
   };
 
@@ -449,7 +463,7 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
             onClick={handleImport}
             disabled={saving || preview.invalid_rows > 0}
           >
-            {saving ? 'Importing...' : 'Import All Books'}
+            {saving ? (uploadProgress > 0 && uploadProgress < 100 ? `Uploading... ${uploadProgress}%` : 'Importing...') : 'Import All Books'}
           </button>
         </>
       );
@@ -463,7 +477,7 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
           onClick={handlePreview}
           disabled={fetching || !file}
         >
-          {fetching ? 'Generating Preview...' : 'Preview Data'}
+          {fetching ? (uploadProgress > 0 && uploadProgress < 100 ? `Uploading... ${uploadProgress}%` : 'Generating Preview...') : 'Preview Data'}
         </button>
       </>
     );

@@ -1350,6 +1350,7 @@ export default function BooksPage() {
   const [books, setBooks] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isFetching, setIsFetching] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [viewMode, setViewMode] = useState('grid');
@@ -1357,8 +1358,36 @@ export default function BooksPage() {
   const [editBook, setEditBook] = useState(null);
   const [deleteModal, setDeleteModal] = useState(null);
   const [detailsBook, setDetailsBook] = useState(null);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalBooks, setTotalBooks] = useState(0);
   const { user } = useAuthStore();
+
+  // Reset page to 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [search, selectedCategory]);
   const isAdmin = user?.role === 'admin';
+
+  // FIX #1: Use refs so we can read detailsBook inside loadData without
+  //         adding it to useCallback deps (which caused an infinite loop).
+  // FIX #6: mountedRef prevents setState calls after the component unmounts.
+  const mountedRef = useRef(false);
+  const isInitialLoad = useRef(true);
+  const detailsBookIdRef = useRef(null);
+
+  // Keep detailsBookIdRef in sync with state without adding detailsBook to loadData deps
+  useEffect(() => {
+    detailsBookIdRef.current = detailsBook?.id ?? null;
+  }, [detailsBook]);
+
+  // Track mounted state for async safety
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const [auditModalOpen, setAuditModalOpen] = useState(false);
   const [auditReport, setAuditReport] = useState(null);
@@ -1369,11 +1398,13 @@ export default function BooksPage() {
     setLoadingReport(true);
     try {
       const res = await booksAPI.getAuditReport();
+      if (!mountedRef.current) return;
       setAuditReport(res.data);
     } catch (err) {
+      if (!mountedRef.current) return;
       toast.error('Failed to load last audit report.');
     } finally {
-      setLoadingReport(false);
+      if (mountedRef.current) setLoadingReport(false);
     }
   };
 
@@ -1382,39 +1413,60 @@ export default function BooksPage() {
     const toastId = toast.loading('Running catalog price/tax audit...');
     try {
       const res = await booksAPI.auditBooks();
+      if (!mountedRef.current) return;
       setAuditReport(res.data);
       toast.success('Audit completed successfully!', { id: toastId });
       loadData();
     } catch (err) {
+      if (!mountedRef.current) return;
       toast.error('Failed to run audit.', { id: toastId });
     } finally {
-      setRunningAudit(false);
+      if (mountedRef.current) setRunningAudit(false);
     }
   };
 
   const [error, setError] = useState(false);
 
+  // FIX #1: detailsBook REMOVED from deps — was causing an infinite re-render
+  //         loop: detailsBook → loadData rebuilds → useEffect fires → API call
+  //         → setDetailsBook(freshDetails) → detailsBook changes → loop.
+  //         Now we read detailsBook via detailsBookIdRef (a stable ref).
+  // FIX #6: mountedRef guards all setState calls to prevent memory leaks.
+  // FIX #8/#15: isInitialLoad ref distinguishes first load (full spinner) from
+  //             subsequent filter changes (no spinner flicker).
   const loadData = useCallback(async () => {
+    const firstLoad = isInitialLoad.current;
+    if (firstLoad) {
+      setLoading(true);
+    } else {
+      setIsFetching(true);
+    }
     try {
       setError(false);
       const [booksRes, catsRes] = await Promise.all([
-        booksAPI.getAll({ search, category_id: selectedCategory }),
+        booksAPI.getAll({ search, category_id: selectedCategory, page, limit: 12 }),
         categoriesAPI.getAll()
       ]);
+
+      // FIX #6: bail out if the component unmounted while the request was in flight
+      if (!mountedRef.current) return;
+
       const fetchedBooks = booksRes.data.books || [];
       setBooks(fetchedBooks);
+      setTotalPages(booksRes.data.totalPages || 1);
+      setTotalBooks(booksRes.data.total || 0);
       setCategories(catsRes.data || []);
 
-      // If the book details modal is currently open, refresh its data reference
-      if (detailsBook) {
-        const freshDetails = fetchedBooks.find(b => b.id === detailsBook.id);
-        if (freshDetails) {
-          setDetailsBook(freshDetails);
-        }
+      // FIX #1: use ref instead of state — no re-render triggered, no dep loop
+      if (detailsBookIdRef.current) {
+        const freshDetails = fetchedBooks.find(b => b.id === detailsBookIdRef.current);
+        if (freshDetails) setDetailsBook(freshDetails);
       }
 
       window.dispatchEvent(new CustomEvent('inventory-updated'));
     } catch (err) {
+      if (!mountedRef.current) return;
+      // FIX #9: always set error state, even when hasGlobalToast suppresses the toast
       setError(true);
       if (!err.hasGlobalToast) {
         const errMsg = err.response?.data?.message || err.message || 'Failed to load books';
@@ -1426,11 +1478,14 @@ export default function BooksPage() {
       console.error(`- Response Body:`, err.response?.data);
       console.error(`- Error Stack Trace:`, err.stack);
     } finally {
+      if (!mountedRef.current) return;
       setLoading(false);
+      setIsFetching(false);
+      isInitialLoad.current = false;
     }
-  }, [search, selectedCategory, detailsBook]);
+  }, [search, selectedCategory, page]); // ← detailsBook intentionally NOT here
 
-  useEffect(() => { setLoading(true); loadData(); }, [loadData]);
+  useEffect(() => { loadData(); }, [loadData]);
 
   const handleDelete = async () => {
     try {
@@ -1443,9 +1498,12 @@ export default function BooksPage() {
     }
   };
 
+  // FIX #4: null guards — stock_qty or low_stock_threshold can be null from DB
   const getStockBadge = (book) => {
-    if (book.stock_qty === 0) return <Badge type="danger" dot>Out of Stock</Badge>;
-    if (book.stock_qty <= book.low_stock_threshold) return <Badge type="warning" dot>Low Stock</Badge>;
+    const qty = book.stock_qty ?? 0;
+    const threshold = book.low_stock_threshold ?? 5;
+    if (qty === 0) return <Badge type="danger" dot>Out of Stock</Badge>;
+    if (qty <= threshold) return <Badge type="warning" dot>Low Stock</Badge>;
     return <Badge type="success" dot>In Stock</Badge>;
   };
 
@@ -1460,13 +1518,17 @@ export default function BooksPage() {
   };
 
   if (loading) return <Spinner text="Loading books..." />;
+  // isFetching: filter/search changed — show subtle indicator, not full spinner
 
   return (
     <div>
       <div className="page-header">
         <div>
           <h1>Books Management</h1>
-          <p>{books.length} books in catalog</p>
+          <p>
+            {totalBooks} books in catalog
+            {isFetching && <span style={{ marginLeft: 8, fontSize: '0.75rem', color: 'var(--color-text-muted)', fontStyle: 'italic' }}>Updating...</span>}
+          </p>
         </div>
         {isAdmin && (
           <div className="page-header-actions">
@@ -1582,10 +1644,11 @@ export default function BooksPage() {
                 )}
                 <div className="book-card-footer">
                   <span className="book-card-price">
-                    {parseFloat(book.price) === 0 ? (
+                    {/* FIX #4: null guard on price */}
+                    {parseFloat(book.price || 0) === 0 ? (
                       <Badge type="success">FREE</Badge>
                     ) : (
-                      `₹${parseFloat(book.price).toFixed(2)}`
+                      `₹${parseFloat(book.price || 0).toFixed(2)}`
                     )}
                   </span>
                   {getStockBadge(book)}
@@ -1637,10 +1700,11 @@ export default function BooksPage() {
                     }
                   </td>
                   <td className="font-semibold" style={{ color: 'var(--color-primary)' }}>
-                    {parseFloat(book.price) === 0 ? (
+                    {/* FIX #4: null guard on price */}
+                    {parseFloat(book.price || 0) === 0 ? (
                       <Badge type="success">FREE</Badge>
                     ) : (
-                      `₹${parseFloat(book.price).toFixed(2)}`
+                      `₹${parseFloat(book.price || 0).toFixed(2)}`
                     )}
                   </td>
                   <td>{book.stock_qty}</td>
@@ -1676,6 +1740,35 @@ export default function BooksPage() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Pagination Controls */}
+      {totalPages > 1 && (
+        <div className="pagination">
+          <button
+            className="page-btn"
+            disabled={page === 1}
+            onClick={() => setPage(p => Math.max(p - 1, 1))}
+          >
+            &laquo;
+          </button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+            <button
+              key={p}
+              className={`page-btn ${page === p ? 'active' : ''}`}
+              onClick={() => setPage(p)}
+            >
+              {p}
+            </button>
+          ))}
+          <button
+            className="page-btn"
+            disabled={page === totalPages}
+            onClick={() => setPage(p => Math.min(p + 1, totalPages))}
+          >
+            &raquo;
+          </button>
         </div>
       )}
 

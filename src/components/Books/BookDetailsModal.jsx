@@ -250,10 +250,10 @@ export default function BookDetailsModal({ isOpen, onClose, book }) {
             <div className="details-item">
               <span className="details-label">Price / Access</span>
               <span className="details-value">
-                {parseFloat(book.price) === 0 ? (
+                {parseFloat(book.price || 0) === 0 ? (
                   <Badge type="success">FREE</Badge>
                 ) : (
-                  <span style={{ color: 'var(--color-primary)', fontSize: '1.05rem' }}>₹{parseFloat(book.price).toFixed(2)}</span>
+                  <span style={{ color: 'var(--color-primary)', fontSize: '1.05rem' }}>₹{parseFloat(book.price || 0).toFixed(2)}</span>
                 )}
               </span>
             </div>
@@ -263,7 +263,7 @@ export default function BookDetailsModal({ isOpen, onClose, book }) {
                 {parseFloat(book.tax_rate || 0) === 0 ? (
                   <Badge type="muted">Tax Exempt (0%)</Badge>
                 ) : (
-                  `GST ${parseFloat(book.tax_rate).toFixed(1)}%`
+                  `GST ${parseFloat(book.tax_rate || 0).toFixed(1)}%`
                 )}
               </span>
             </div>

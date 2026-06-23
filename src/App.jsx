@@ -6,6 +6,7 @@ import { useAuthStore } from './store/authStore';
 // Eagerly load layout and login (needed immediately)
 import LoginPage from './pages/Login/LoginPage';
 import AppLayout from './components/Layout/AppLayout';
+import ErrorBoundary from './components/UI/ErrorBoundary';
 
 // Lazy load all page components for better initial load performance
 const DashboardPage = lazy(() => import('./pages/Dashboard/DashboardPage'));
@@ -107,12 +108,16 @@ export default function App() {
           {/* Admin only */}
           <Route path="/books" element={
             <PrivateRoute adminOnly>
-              <Suspense fallback={<PageLoader />}><BooksPage /></Suspense>
+              <ErrorBoundary>
+                <Suspense fallback={<PageLoader />}><BooksPage /></Suspense>
+              </ErrorBoundary>
             </PrivateRoute>
           } />
           <Route path="/inventory" element={
             <PrivateRoute adminOnly>
-              <Suspense fallback={<PageLoader />}><InventoryPage /></Suspense>
+              <ErrorBoundary>
+                <Suspense fallback={<PageLoader />}><InventoryPage /></Suspense>
+              </ErrorBoundary>
             </PrivateRoute>
           } />
           <Route path="/sales" element={

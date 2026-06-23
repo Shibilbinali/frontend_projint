@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Edit2, AlertTriangle, Package, Info } from 'lucide-react';
 import { inventoryAPI } from '../../api';
 import Modal from '../../components/UI/Modal';
@@ -18,19 +18,35 @@ export default function InventoryPage() {
   const [stockForm, setStockForm] = useState({ stock_qty: '', low_stock_threshold: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(false);
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+
+  // Reset page to 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [search, showLowStock]);
+  // FIX #16: prevent setState on unmounted component
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const loadInventory = useCallback(async () => {
     try {
       setError(false);
-      const res = await inventoryAPI.getAll({ search, low_stock: showLowStock });
+      const res = await inventoryAPI.getAll({ search, low_stock: showLowStock, page, limit: 15 });
+      if (!mountedRef.current) return;
       setInventory(res.data);
+      setTotalPages(res.data.totalPages || 1);
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(true);
       if (!err.hasGlobalToast) toast.error('Failed to load inventory.');
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
-  }, [search, showLowStock]);
+  }, [search, showLowStock, page]);
 
   useEffect(() => { setLoading(true); loadInventory(); }, [loadInventory]);
 
@@ -43,14 +59,16 @@ export default function InventoryPage() {
     setSaving(true);
     try {
       await inventoryAPI.updateStock(editModal.id, stockForm);
+      if (!mountedRef.current) return;
       toast.success('Stock updated!');
       window.dispatchEvent(new CustomEvent('inventory-updated'));
       setEditModal(null);
       loadInventory();
     } catch (err) {
+      if (!mountedRef.current) return;
       if (!err.hasGlobalToast) toast.error('Failed to update stock.');
     } finally {
-      setSaving(false);
+      if (mountedRef.current) setSaving(false);
     }
   };
 
@@ -260,6 +278,35 @@ export default function InventoryPage() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Pagination Controls */}
+      {totalPages > 1 && (
+        <div className="pagination">
+          <button
+            className="page-btn"
+            disabled={page === 1}
+            onClick={() => setPage(p => Math.max(p - 1, 1))}
+          >
+            &laquo;
+          </button>
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+            <button
+              key={p}
+              className={`page-btn ${page === p ? 'active' : ''}`}
+              onClick={() => setPage(p)}
+            >
+              {p}
+            </button>
+          ))}
+          <button
+            className="page-btn"
+            disabled={page === totalPages}
+            onClick={() => setPage(p => Math.min(p + 1, totalPages))}
+          >
+            &raquo;
+          </button>
         </div>
       )}
 

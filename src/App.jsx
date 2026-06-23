@@ -1,16 +1,48 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { useAuthStore } from './store/authStore';
 
+// Eagerly load layout and login (needed immediately)
 import LoginPage from './pages/Login/LoginPage';
 import AppLayout from './components/Layout/AppLayout';
-import DashboardPage from './pages/Dashboard/DashboardPage';
-import BooksPage from './pages/Books/BooksPage';
-import InventoryPage from './pages/Inventory/InventoryPage';
-import POSPage from './pages/POS/POSPage';
-import CustomersPage from './pages/Customers/CustomersPage';
-import SalesPage from './pages/Sales/SalesPage';
-import SettingsPage from './pages/Settings/SettingsPage';
+
+// Lazy load all page components for better initial load performance
+const DashboardPage = lazy(() => import('./pages/Dashboard/DashboardPage'));
+const BooksPage = lazy(() => import('./pages/Books/BooksPage'));
+const InventoryPage = lazy(() => import('./pages/Inventory/InventoryPage'));
+const POSPage = lazy(() => import('./pages/POS/POSPage'));
+const CustomersPage = lazy(() => import('./pages/Customers/CustomersPage'));
+const SalesPage = lazy(() => import('./pages/Sales/SalesPage'));
+const SettingsPage = lazy(() => import('./pages/Settings/SettingsPage'));
+
+
+// Minimal loading fallback that matches the app's visual style
+function PageLoader() {
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: '100%',
+      minHeight: '300px',
+      flexDirection: 'column',
+      gap: '16px',
+      color: 'var(--color-text-muted)',
+      fontSize: '0.875rem',
+    }}>
+      <div style={{
+        width: '32px',
+        height: '32px',
+        border: '2px solid var(--color-border)',
+        borderTopColor: 'var(--color-primary)',
+        borderRadius: '50%',
+        animation: 'spin 0.7s linear infinite',
+      }} />
+      Loading...
+    </div>
+  );
+}
 
 // Route guard
 function PrivateRoute({ children, adminOnly = false }) {
@@ -66,29 +98,31 @@ export default function App() {
         {/* Protected */}
         <Route element={<PrivateRoute><AppLayout /></PrivateRoute>}>
           <Route index element={<Navigate to="/admin-dashboard" replace />} />
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/admin-dashboard" element={<DashboardPage />} />
-          <Route path="/pos" element={<POSPage />} />
-          <Route path="/cashier-dashboard" element={<POSPage />} />
-          <Route path="/customers" element={<CustomersPage />} />
+          <Route path="/dashboard" element={<Suspense fallback={<PageLoader />}><DashboardPage /></Suspense>} />
+          <Route path="/admin-dashboard" element={<Suspense fallback={<PageLoader />}><DashboardPage /></Suspense>} />
+          <Route path="/pos" element={<Suspense fallback={<PageLoader />}><POSPage /></Suspense>} />
+          <Route path="/cashier-dashboard" element={<Suspense fallback={<PageLoader />}><POSPage /></Suspense>} />
+          <Route path="/customers" element={<Suspense fallback={<PageLoader />}><CustomersPage /></Suspense>} />
 
           {/* Admin only */}
           <Route path="/books" element={
             <PrivateRoute adminOnly>
-              <BooksPage />
+              <Suspense fallback={<PageLoader />}><BooksPage /></Suspense>
             </PrivateRoute>
           } />
           <Route path="/inventory" element={
             <PrivateRoute adminOnly>
-              <InventoryPage />
+              <Suspense fallback={<PageLoader />}><InventoryPage /></Suspense>
             </PrivateRoute>
           } />
           <Route path="/sales" element={
             <PrivateRoute adminOnly>
-              <SalesPage />
+              <Suspense fallback={<PageLoader />}><SalesPage /></Suspense>
             </PrivateRoute>
           } />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings" element={<Suspense fallback={<PageLoader />}><SettingsPage /></Suspense>} />
+
+
         </Route>
 
         {/* Fallback */}

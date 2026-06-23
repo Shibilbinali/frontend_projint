@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit2, Trash2, Eye, Users } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Plus, Edit2, Trash2, Eye, Users, Upload, Download, ClipboardList, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
 import { customersAPI, salesAPI } from '../../api';
 import Modal from '../../components/UI/Modal';
 import SearchInput from '../../components/UI/SearchInput';
@@ -9,11 +9,30 @@ import toast from 'react-hot-toast';
 import ReceiptModal from '../../components/Receipt/ReceiptModal';
 
 function CustomerFormModal({ isOpen, onClose, customer, onSaved }) {
+  const [importMode, setImportMode] = useState('single'); // 'single' or 'bulk'
+  const [bulkTab, setBulkTab] = useState('import'); // 'import' or 'history'
+
+  // Single mode state
   const [form, setForm] = useState({ name: '', phone: '', email: '', address: '', notes: '' });
   const [saving, setSaving] = useState(false);
+  const [formErrors, setFormErrors] = useState({});
+
+  // Bulk mode state
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [session, setSession] = useState(null);
+  const [duplicateMode, setDuplicateMode] = useState('skip');
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [fetching, setFetching] = useState(false);
+  const [pdfOpened, setPdfOpened] = useState(false);
+
+  const fileInputRef = useRef();
+  const pollingRef = useRef();
 
   useEffect(() => {
     if (customer) {
+      setImportMode('single');
       setForm({
         name: customer.name || '',
         phone: customer.phone || '',
@@ -22,12 +41,169 @@ function CustomerFormModal({ isOpen, onClose, customer, onSaved }) {
         notes: customer.notes || ''
       });
     } else {
+      setImportMode('single');
       setForm({ name: '', phone: '', email: '', address: '', notes: '' });
+      setFile(null);
+      setPreview(null);
+      setSession(null);
+      setPdfOpened(false);
     }
+    setFormErrors({});
   }, [customer, isOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, []);
+
+  const fetchHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const res = await customersAPI.getImportReports();
+      setHistory(res.data);
+    } catch {
+      toast.error('Failed to load import history.');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen && importMode === 'bulk' && bulkTab === 'history') {
+      fetchHistory();
+    }
+  }, [isOpen, importMode, bulkTab]);
+
+  const handleDownloadTemplate = async (format) => {
+    try {
+      const res = await customersAPI.downloadTemplate(format);
+      const url = URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `customers_import_template.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Failed to download template.');
+    }
+  };
+
+  const handlePreview = async (selectedFile = null) => {
+    const fileToUpload = selectedFile || file;
+    if (!fileToUpload) return;
+    setFetching(true);
+    const fd = new FormData();
+    fd.append('file', fileToUpload);
+    try {
+      const res = await customersAPI.preview(fd);
+      setPreview(res.data);
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || 'Preview failed.');
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!file) return;
+    setSaving(true);
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await customersAPI.import(fd, duplicateMode);
+      setSession({
+        id: res.data.session_id,
+        status: 'processing',
+        success_count: 0,
+        updated_count: 0,
+        skipped_count: 0,
+        failed_count: 0,
+        total_rows: preview ? preview.total_rows : 0
+      });
+      startPolling(res.data.session_id);
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || 'Import failed.');
+      setSaving(false);
+    }
+  };
+
+  const startPolling = (sessionId) => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    pollingRef.current = setInterval(async () => {
+      try {
+        const res = await customersAPI.getImportSessionStatus(sessionId);
+        const sess = res.data;
+        setSession(sess);
+        if (sess.status === 'completed' || sess.status === 'failed') {
+          clearInterval(pollingRef.current);
+          setSaving(false);
+          onSaved();
+          if (sess.status === 'completed') {
+            toast.success(`${sess.success_count + sess.updated_count} Customers Imported Successfully`);
+            if (sess.report_id && !pdfOpened) {
+              setPdfOpened(true);
+              handleDownloadReport(sess.report_id, true);
+            }
+          }
+        }
+      } catch {
+        // Ignored
+      }
+    }, 1000);
+  };
+
+  const handleDownloadErrors = (sess) => {
+    const errors = sess.errors || [];
+    if (!errors.length) {
+      toast.error('No errors to download.');
+      return;
+    }
+    const lines = [
+      'row,name,phone,error',
+      ...errors.map(e => `"${e.row}","${(e.name || '').replace(/"/g, '""')}","${(e.phone || '').replace(/"/g, '""')}","${(e.error || '').replace(/"/g, '""')}"`)
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `customer_import_errors_session_${sess.id}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadReport = async (reportId, viewOnly = false) => {
+    try {
+      const res = await customersAPI.downloadImportReport(reportId);
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      if (viewOnly) {
+        window.open(url, '_blank');
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `customer_import_report_${reportId}.pdf`;
+        a.click();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      toast.error('Failed to download report.');
+    }
+  };
+
+  const validate = () => {
+    const errors = {};
+    if (!form.name.trim()) errors.name = 'Full name is required.';
+    if (!form.phone.trim()) errors.phone = 'Phone number is required.';
+    return errors;
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const errors = validate();
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors);
+      return;
+    }
     setSaving(true);
     try {
       if (customer) {
@@ -46,44 +222,482 @@ function CustomerFormModal({ isOpen, onClose, customer, onSaved }) {
     }
   };
 
-  return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title={customer ? 'Edit Customer' : 'Add Customer'}
-      footer={
+  const getFooter = () => {
+    if (importMode === 'single') {
+      return (
         <>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" onClick={handleSubmit} disabled={saving} id="save-customer-btn">
             {saving ? 'Saving...' : 'Save Customer'}
           </button>
         </>
+      );
+    }
+
+    if (bulkTab === 'history') {
+      return <button className="btn btn-secondary" onClick={onClose}>Close</button>;
+    }
+
+    if (session) {
+      if (session.status === 'processing') {
+        return <button className="btn btn-primary" disabled>Importing...</button>;
       }
+      return <button className="btn btn-secondary" onClick={onClose}>Close</button>;
+    }
+
+    if (preview) {
+      return (
+        <>
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              setPreview(null);
+              setFile(null);
+            }}
+            disabled={saving}
+          >
+            Cancel Preview
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={handleImport}
+            disabled={saving || preview.invalid_rows > 0}
+          >
+            {saving ? 'Importing...' : 'Import All Customers'}
+          </button>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button
+          className="btn btn-primary"
+          onClick={handlePreview}
+          disabled={fetching || !file}
+        >
+          {fetching ? 'Generating Preview...' : 'Preview Data'}
+        </button>
+      </>
+    );
+  };
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={customer ? 'Edit Customer' : 'Add Customer'}
+      size={importMode === 'bulk' ? 'lg' : 'md'}
+      footer={getFooter()}
     >
-      <form onSubmit={handleSubmit}>
-        <div className="grid grid-2 gap-md">
-          <div className="input-group">
-            <label className="input-label">Full Name *</label>
-            <input type="text" className="input" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} id="customer-name-input" />
-          </div>
-          <div className="input-group">
-            <label className="input-label">Phone</label>
-            <input type="tel" className="input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-          </div>
-          <div className="input-group">
-            <label className="input-label">Email</label>
-            <input type="email" className="input" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-          </div>
-          <div className="input-group">
-            <label className="input-label">Address</label>
-            <input type="text" className="input" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-          </div>
-          <div className="input-group" style={{ gridColumn: 'span 2' }}>
-            <label className="input-label">Notes</label>
-            <textarea className="input" placeholder="Internal notes or preferences..." value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} style={{ minHeight: 80 }} />
-          </div>
+      {/* Mode Selector Toggle (only when creating a new customer) */}
+      {!customer && (
+        <div style={{ display: 'flex', gap: 'var(--spacing-md)', marginBottom: 'var(--spacing-md)', background: 'var(--color-surface-2)', padding: 4, borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)', width: 'fit-content' }}>
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{
+              background: importMode === 'single' ? 'var(--color-primary)' : 'none',
+              color: importMode === 'single' ? 'white' : 'var(--color-text-secondary)',
+              fontWeight: importMode === 'single' ? 600 : 500,
+              border: 'none',
+              boxShadow: importMode === 'single' ? 'var(--shadow-sm)' : 'none',
+              padding: '6px 12px'
+            }}
+            onClick={() => setImportMode('single')}
+          >
+            Single Customer
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{
+              background: importMode === 'bulk' ? 'var(--color-primary)' : 'none',
+              color: importMode === 'bulk' ? 'white' : 'var(--color-text-secondary)',
+              fontWeight: importMode === 'bulk' ? 600 : 500,
+              border: 'none',
+              boxShadow: importMode === 'bulk' ? 'var(--shadow-sm)' : 'none',
+              padding: '6px 12px'
+            }}
+            onClick={() => setImportMode('bulk')}
+          >
+            Bulk Import
+          </button>
         </div>
-      </form>
+      )}
+
+      {importMode === 'bulk' ? (
+        <div>
+          {/* Sub-tabs */}
+          <div style={{ display: 'flex', borderBottom: '1px solid var(--color-border)', marginBottom: 'var(--spacing-md)' }}>
+            <button
+              type="button"
+              style={{
+                background: 'none',
+                border: 'none',
+                borderBottom: bulkTab === 'import' ? '2px solid var(--color-primary)' : '2px solid transparent',
+                color: bulkTab === 'import' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                padding: '10px 15px',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                cursor: 'pointer'
+              }}
+              onClick={() => setBulkTab('import')}
+              disabled={saving}
+            >
+              <Upload size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+              Upload & Import
+            </button>
+            <button
+              type="button"
+              style={{
+                background: 'none',
+                border: 'none',
+                borderBottom: bulkTab === 'history' ? '2px solid var(--color-primary)' : '2px solid transparent',
+                color: bulkTab === 'history' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                padding: '10px 15px',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                cursor: 'pointer'
+              }}
+              onClick={() => setBulkTab('history')}
+              disabled={saving}
+            >
+              <ClipboardList size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+              Import History
+            </button>
+          </div>
+
+          {bulkTab === 'import' ? (
+            <div>
+              {/* Importing state (Progress Bar) */}
+              {session && session.status === 'processing' ? (
+                <div style={{ textAlign: 'center', padding: 'var(--spacing-lg) 0' }}>
+                  <div className="spinner spin" style={{ width: 36, height: 36, margin: '0 auto 15px' }} />
+                  <p style={{ fontWeight: 600, marginBottom: 5 }}>Importing customers...</p>
+                  {(() => {
+                    const total = session.total_rows || 1;
+                    const processed = session.success_count + session.updated_count + session.skipped_count + session.failed_count;
+                    const pct = Math.min(100, Math.round((processed / total) * 100));
+                    return (
+                      <div style={{ maxWidth: 400, margin: '0 auto' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--color-text-secondary)', marginBottom: 5 }}>
+                          <span>{pct}%</span>
+                          <span>{processed} / {total} completed</span>
+                        </div>
+                        <div style={{ height: 8, background: 'var(--color-surface-3)', borderRadius: 4, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${pct}%`, background: 'var(--color-primary)', borderRadius: 4, transition: 'width 0.2s ease' }} />
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : session && (session.status === 'completed' || session.status === 'failed') ? (
+                /* Results Screen */
+                <div style={{ background: 'var(--color-surface-2)', padding: 'var(--spacing-lg)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--color-border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 15 }}>
+                    <CheckCircle size={24} color="var(--color-success)" />
+                    <h3 style={{ margin: 0, fontWeight: 700 }}>{session.success_count + session.updated_count} Customers Imported Successfully</h3>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12, marginBottom: 20 }}>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--color-success)' }}>{session.success_count}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Customers Imported</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--color-primary)' }}>{session.updated_count}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Customers Updated</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--color-text-muted)' }}>{session.skipped_count}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Duplicates Skipped</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: session.failed_count > 0 ? 'var(--color-danger)' : 'var(--color-text-muted)' }}>{session.failed_count}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Failed Rows</div>
+                    </div>
+                  </div>
+
+                  {session.failed_count > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)', padding: '10px 14px', borderRadius: 'var(--radius-md)', marginBottom: 20 }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-danger)' }}>Some rows failed to import due to database or verification constraints.</span>
+                      <button type="button" className="btn btn-danger btn-sm" onClick={() => handleDownloadErrors(session)}>
+                        Download Error Report
+                      </button>
+                    </div>
+                  )}
+
+                  {session.report_id && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: 'var(--color-surface-3)', border: '1px solid var(--color-border)', padding: '15px', borderRadius: 'var(--radius-md)', marginBottom: 20 }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Import Report PDF is ready</span>
+                      <button type="button" className="btn btn-primary btn-sm" onClick={() => handleDownloadReport(session.report_id, true)} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Eye size={14} /> View PDF
+                      </button>
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleDownloadReport(session.report_id)} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Download size={14} /> Download PDF
+                      </button>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => {
+                        setFile(null);
+                        setPreview(null);
+                        setSession(null);
+                        setPdfOpened(false);
+                      }}
+                    >
+                      Import Another File
+                    </button>
+                  </div>
+                </div>
+              ) : preview ? (
+                /* Preview Data Panel */
+                <div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 15 }}>
+                    <div style={{ background: 'var(--color-surface-3)', padding: '10px', borderRadius: 'var(--radius-md)' }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>{preview.total_rows}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Total Rows</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: '10px', borderRadius: 'var(--radius-md)' }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: 'var(--color-success)' }}>{preview.valid_rows}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Valid Rows</div>
+                    </div>
+                    <div style={{
+                      background: 'var(--color-surface-3)',
+                      padding: '10px',
+                      borderRadius: 'var(--radius-md)',
+                      border: preview.invalid_rows > 0 ? '1px solid rgba(224,82,82,0.3)' : 'none',
+                      backgroundColor: preview.invalid_rows > 0 ? 'rgba(224,82,82,0.05)' : 'var(--color-surface-3)'
+                    }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: preview.invalid_rows > 0 ? 'var(--color-danger)' : 'var(--color-success)' }}>{preview.invalid_rows}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Invalid Rows</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: '10px', borderRadius: 'var(--radius-md)' }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: 'var(--color-primary)' }}>{preview.duplicate_phone_count}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Duplicate Phone Numbers</div>
+                    </div>
+                  </div>
+
+                  {preview.invalid_rows > 0 && (
+                    <div style={{ background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: 'var(--radius-md)', padding: 12, marginBottom: 15 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                        <AlertTriangle color="var(--color-danger)" size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                        <div>
+                          <p style={{ margin: 0, fontWeight: 600, color: 'var(--color-danger)', fontSize: '0.85rem' }}>File contains validation errors.</p>
+                          <p style={{ margin: '4px 0 0', color: 'var(--color-text-secondary)', fontSize: '0.75rem' }}>Please fix all validation errors in your CSV/XLSX sheet and upload it again. Import is disabled until all rows are valid.</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Preview Table removed to avoid displaying raw CSV content */}
+
+                  {/* Duplicate Handling Option */}
+                  {preview.duplicate_phone_count > 0 && (
+                    <div style={{ background: 'var(--color-surface-3)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 'var(--radius-md)', marginBottom: 15 }}>
+                      <div className="input-group" style={{ margin: 0 }}>
+                        <label className="input-label" style={{ fontWeight: 700 }}>Duplicate Phone Handling Option</label>
+                        <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', margin: '2px 0 8px' }}>
+                          We detected {preview.duplicate_phone_count} customers in this sheet with phone numbers already existing in the system or duplicated in the sheet. Select how you want to handle them:
+                        </p>
+                        <select
+                          className="select"
+                          value={duplicateMode}
+                          onChange={(e) => setDuplicateMode(e.target.value)}
+                          style={{ maxWidth: 260 }}
+                        >
+                          <option value="skip">Skip duplicates</option>
+                          <option value="update">Update existing customer details</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Upload State */
+                <div>
+                  <p className="text-secondary" style={{ fontSize: '0.8rem', marginBottom: 15 }}>
+                    Select a CSV or XLSX spreadsheet containing your customers list. Ensure all columns match the template.
+                  </p>
+
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleDownloadTemplate('csv')}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                    >
+                      <Download size={14} /> CSV Template
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleDownloadTemplate('xlsx')}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                    >
+                      <Download size={14} /> XLSX Template
+                    </button>
+                  </div>
+
+                  <div
+                    className={`dm-drop-zone ${file ? 'dm-drop-zone-filled' : ''}`}
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{
+                      border: '2px dashed var(--color-border)',
+                      padding: '40px 20px',
+                      borderRadius: 'var(--radius-lg)',
+                      textAlign: 'center',
+                      cursor: 'pointer',
+                      background: 'var(--color-surface-2)',
+                      transition: 'all 0.2s',
+                      marginBottom: 15
+                    }}
+                  >
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".csv,.xlsx,.xls"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const f = e.target.files[0];
+                        if (f) {
+                          setFile(f);
+                          setPreview(null);
+                          handlePreview(f); // Automatically fetch preview
+                        }
+                      }}
+                    />
+                    <Upload size={32} color="var(--color-primary)" style={{ margin: '0 auto 10px' }} />
+                    {file ? (
+                      <div>
+                        <p style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--color-text)' }}>{file.name}</p>
+                        <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
+                          {(file.size / 1024).toFixed(1)} KB
+                        </p>
+                      </div>
+                    ) : (
+                      <div>
+                        <p style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--color-text)' }}>
+                          Click to browse or drag & drop file
+                        </p>
+                        <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
+                          CSV or XLSX spreadsheets. Maximum 50MB limit.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Import History List Panel */
+            <div>
+              {loadingHistory ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '30px 0' }}>
+                  <div className="spinner" style={{ width: 24, height: 24 }} />
+                </div>
+              ) : history.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '30px 0', color: 'var(--color-text-muted)' }}>
+                  No bulk customer import session records found.
+                </div>
+              ) : (
+                <div className="table-wrapper" style={{ maxHeight: 350, overflowY: 'auto' }}>
+                  <table className="table" style={{ fontSize: '0.78rem' }}>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>File Name</th>
+                        <th>User</th>
+                        <th>Records</th>
+                        <th>Failed</th>
+                        <th>Skipped</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {history.map((report) => (
+                        <tr key={report.id}>
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            {new Date(report.created_at).toLocaleString('en-IN', {
+                              day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+                            })}
+                          </td>
+                          <td style={{ fontWeight: 600, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={report.file_name}>
+                            {report.file_name}
+                          </td>
+                          <td>{report.imported_by_name || '—'}</td>
+                          <td style={{ color: 'var(--color-success)', fontWeight: 600 }}>{report.total_records}</td>
+                          <td style={{ color: report.failed_records > 0 ? 'var(--color-danger)' : 'inherit', fontWeight: report.failed_records > 0 ? 600 : 500 }}>
+                            {report.failed_records}
+                          </td>
+                          <td>{report.duplicate_records}</td>
+                          <td>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                              <button type="button" className="btn btn-ghost btn-sm" onClick={() => handleDownloadReport(report.id, true)} title="View PDF">
+                                <Eye size={16} />
+                              </button>
+                              <button type="button" className="btn btn-ghost btn-sm" onClick={() => handleDownloadReport(report.id)} title="Download PDF">
+                                <Download size={16} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit}>
+          <div className="grid grid-2 gap-md">
+            <div className="input-group">
+              <label className="input-label">Full Name <span style={{ color: 'var(--color-danger, #ef4444)' }}>*</span></label>
+              <input
+                type="text"
+                className={`input${formErrors.name ? ' input-error' : ''}`}
+                value={form.name}
+                onChange={(e) => { setForm({ ...form, name: e.target.value }); setFormErrors(prev => ({ ...prev, name: '' })); }}
+                id="customer-name-input"
+                placeholder="Enter full name"
+              />
+              {formErrors.name && <span style={{ color: 'var(--color-danger, #ef4444)', fontSize: '0.78rem', marginTop: 2 }}>{formErrors.name}</span>}
+            </div>
+            <div className="input-group">
+              <label className="input-label">Phone <span style={{ color: 'var(--color-danger, #ef4444)' }}>*</span></label>
+              <input
+                type="tel"
+                className={`input${formErrors.phone ? ' input-error' : ''}`}
+                value={form.phone}
+                onChange={(e) => { setForm({ ...form, phone: e.target.value }); setFormErrors(prev => ({ ...prev, phone: '' })); }}
+                id="customer-phone-input"
+                placeholder="e.g. 9876543210"
+              />
+              {formErrors.phone && <span style={{ color: 'var(--color-danger, #ef4444)', fontSize: '0.78rem', marginTop: 2 }}>{formErrors.phone}</span>}
+            </div>
+            <div className="input-group">
+              <label className="input-label">Email <span style={{ color: 'var(--color-text-muted)', fontSize: '0.78rem' }}>(optional)</span></label>
+              <input type="email" className="input" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} id="customer-email-input" placeholder="Enter email address" />
+            </div>
+            <div className="input-group">
+              <label className="input-label">Address <span style={{ color: 'var(--color-text-muted)', fontSize: '0.78rem' }}>(optional)</span></label>
+              <input type="text" className="input" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} id="customer-address-input" placeholder="Enter address" />
+            </div>
+            <div className="input-group" style={{ gridColumn: 'span 2' }}>
+              <label className="input-label">Notes <span style={{ color: 'var(--color-text-muted)', fontSize: '0.78rem' }}>(optional)</span></label>
+              <textarea className="input" placeholder="Internal notes or preferences..." value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} style={{ minHeight: 80 }} id="customer-notes-input" />
+            </div>
+          </div>
+        </form>
+      )}
     </Modal>
   );
 }
@@ -679,6 +1293,9 @@ export default function CustomersPage() {
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [city, setCity] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editCustomer, setEditCustomer] = useState(null);
   const [viewCustomer, setViewCustomer] = useState(null);
@@ -686,14 +1303,14 @@ export default function CustomersPage() {
 
   const loadCustomers = useCallback(async () => {
     try {
-      const res = await customersAPI.getAll({ search });
+      const res = await customersAPI.getAll({ search, city, startDate, endDate });
       setCustomers(res.data.customers || []);
     } catch {
       toast.error('Failed to load customers.');
     } finally {
       setLoading(false);
     }
-  }, [search]);
+  }, [search, city, startDate, endDate]);
 
   useEffect(() => { setLoading(true); loadCustomers(); }, [loadCustomers]);
 
@@ -717,6 +1334,21 @@ export default function CustomersPage() {
     }
   };
 
+  const handleExport = async (format) => {
+    try {
+      const res = await customersAPI.export({ search, city, startDate, endDate, format });
+      const url = URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `customers_export_${new Date().toISOString().split('T')[0]}.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Customers exported to ${format.toUpperCase()}!`);
+    } catch (err) {
+      toast.error('Failed to export customers.');
+    }
+  };
+
   if (loading) return <Spinner text="Loading customers..." />;
 
   return (
@@ -726,13 +1358,60 @@ export default function CustomersPage() {
           <h1>Customers</h1>
           <p>{customers.length} registered customers</p>
         </div>
-        <button className="btn btn-primary" onClick={() => { setEditCustomer(null); setModalOpen(true); }} id="add-customer-btn">
-          <Plus size={18} /> Add Customer
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--spacing-sm)' }}>
+          <button className="btn btn-secondary" onClick={() => handleExport('csv')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Download size={16} /> Export CSV
+          </button>
+          <button className="btn btn-secondary" onClick={() => handleExport('xlsx')} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Download size={16} /> Export XLSX
+          </button>
+          <button className="btn btn-primary" onClick={() => { setEditCustomer(null); setModalOpen(true); }} id="add-customer-btn">
+            <Plus size={18} /> Add Customer
+          </button>
+        </div>
       </div>
 
-      <div className="filters-bar">
+      <div className="filters-bar" style={{ display: 'flex', gap: 'var(--spacing-md)', flexWrap: 'wrap', alignItems: 'center' }}>
         <SearchInput value={search} onSearch={setSearch} placeholder="Search by name, phone, or email..." />
+        <input
+          type="text"
+          className="input"
+          style={{ width: 180 }}
+          placeholder="Filter by City..."
+          value={city}
+          onChange={(e) => setCity(e.target.value)}
+        />
+        <div style={{ display: 'flex', gap: 'var(--spacing-xs)', alignItems: 'center' }}>
+          <span className="text-muted text-sm">Joined:</span>
+          <input
+            type="date"
+            className="input"
+            style={{ width: 150 }}
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+          <span className="text-muted text-sm">to</span>
+          <input
+            type="date"
+            className="input"
+            style={{ width: 150 }}
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+          />
+        </div>
+        {(search || city || startDate || endDate) && (
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => {
+              setSearch('');
+              setCity('');
+              setStartDate('');
+              setEndDate('');
+            }}
+          >
+            Clear Filters
+          </button>
+        )}
       </div>
 
       {customers.length === 0 ? (

@@ -1,9 +1,25 @@
-import { useRef } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { useReactToPrint } from 'react-to-print';
 import { Printer, X } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
+import { settingsAPI } from '../../api';
 import Modal from '../UI/Modal';
 
-function ReceiptContent({ sale }) {
+// Helper function to build standard UPI payload URI
+const getUpiString = (sale, paymentSettings) => {
+  const upiId = paymentSettings.upi_id || 'bookstorepos@upi';
+  const merchantName = paymentSettings.merchant_name || 'BookStore POS';
+  
+  const amountVal = parseFloat(sale.total_amount || 0);
+  const amount = Number.isInteger(amountVal) ? amountVal.toString() : amountVal.toFixed(2);
+  
+  // Format invoice number to replace slashes with dashes to avoid encoding issues in UPI apps
+  const invoiceNum = (sale.invoice_number || String(sale.id)).replace(/\//g, '-');
+  
+  return `upi://pay?pa=${upiId}&pn=${encodeURIComponent(merchantName)}&am=${amount}&cu=INR&tn=Invoice-${invoiceNum}`;
+};
+
+function ReceiptContent({ sale, storeSettings, paymentSettings }) {
   const fmt = (n) => parseFloat(n || 0).toFixed(2);
   const saleDate = new Date(sale.created_at).toLocaleString('en-IN', {
     day: '2-digit', month: 'short', year: 'numeric',
@@ -13,9 +29,13 @@ function ReceiptContent({ sale }) {
   return (
     <div className="receipt">
       <div className="receipt-header">
-        <div className="receipt-title">📚 BookStore POS</div>
+        <div className="receipt-title">📚 {storeSettings.store_name || 'BookStore POS'}</div>
         <div className="receipt-subtitle">Point of Sale Receipt</div>
-        <div style={{ fontSize: '0.7rem', marginTop: 8, color: '#666' }}>
+        <div style={{ fontSize: '0.75rem', marginTop: 6, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', color: '#1a1a1a' }}>
+          <span>📧 {storeSettings.store_email || 'Bookstorepos@gmail.com'}</span>
+          <span>📞 {storeSettings.store_phone || '9559440043'}</span>
+        </div>
+        <div style={{ fontSize: '0.7,rem', marginTop: 8, color: '#666' }}>
           {saleDate}<br />
           {sale.invoice_number ? `Invoice: ${sale.invoice_number}` : `Invoice #${String(sale.id).padStart(6, '0')}`}
         </div>
@@ -110,6 +130,25 @@ function ReceiptContent({ sale }) {
         )}
       </div>
 
+      {sale.payment_method === 'upi' && paymentSettings.upi_enabled && (
+        <div style={{ marginTop: 16, textAlign: 'center' }}>
+          <hr className="receipt-divider" />
+          <div style={{ fontSize: '0.75rem', fontWeight: 600, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Scan & Pay</div>
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 8, background: '#fff' }}>
+            <QRCodeSVG 
+              value={getUpiString(sale, paymentSettings)}
+              size={130}
+              level="M"
+              includeMargin={true}
+            />
+          </div>
+          <div style={{ fontSize: '0.7rem', color: '#333', marginTop: 6, lineHeight: 1.4 }}>
+            <strong>UPI ID:</strong> {paymentSettings.upi_id || 'bookstorepos@upi'}<br />
+            <strong>Amount:</strong> ₹{fmt(sale.total_amount)}
+          </div>
+        </div>
+      )}
+
       <div className="receipt-footer">
         <hr className="receipt-divider" />
         <p>Thank you for your purchase!</p>
@@ -121,6 +160,29 @@ function ReceiptContent({ sale }) {
 
 export default function ReceiptModal({ isOpen, onClose, sale }) {
   const printRef = useRef();
+  
+  const [storeSettings, setStoreSettings] = useState({
+    store_name: 'BookStore POS',
+    store_email: 'Bookstorepos@gmail.com',
+    store_phone: '9559440043'
+  });
+  const [paymentSettings, setPaymentSettings] = useState({
+    upi_enabled: true,
+    upi_id: 'bookstorepos@upi',
+    merchant_name: 'BookStore POS'
+  });
+
+  useEffect(() => {
+    if (isOpen && sale) {
+      settingsAPI.getStore()
+        .then((res) => setStoreSettings(res.data))
+        .catch((err) => console.error('Failed to load store settings in receipt:', err));
+
+      settingsAPI.getPayment()
+        .then((res) => setPaymentSettings(res.data))
+        .catch((err) => console.error('Failed to load payment settings in receipt:', err));
+    }
+  }, [isOpen, sale]);
 
   const handlePrint = useReactToPrint({
     content: () => printRef.current,
@@ -144,7 +206,11 @@ export default function ReceiptModal({ isOpen, onClose, sale }) {
       }
     >
       <div ref={printRef}>
-        <ReceiptContent sale={sale} />
+        <ReceiptContent 
+          sale={sale} 
+          storeSettings={storeSettings} 
+          paymentSettings={paymentSettings} 
+        />
       </div>
     </Modal>
   );

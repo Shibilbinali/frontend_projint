@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, BookOpen, Package, ShoppingCart,
   Users, BarChart3, Settings, ChevronLeft, ChevronRight,
-  BookMarked, LogOut, AlertTriangle
+  LogOut,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 
@@ -12,13 +12,15 @@ const navItems = [
   { label: 'POS Billing', icon: ShoppingCart, path: '/pos', roles: ['admin', 'cashier'], highlight: true },
 ];
 
-const adminNav = [
+const managementNav = [
   { label: 'Books', icon: BookOpen, path: '/books', roles: ['admin'] },
   { label: 'Inventory', icon: Package, path: '/inventory', roles: ['admin'] },
   { label: 'Customers', icon: Users, path: '/customers', roles: ['admin', 'cashier'] },
   { label: 'Sales Reports', icon: BarChart3, path: '/sales', roles: ['admin'] },
   { label: 'Settings', icon: Settings, path: '/settings', roles: ['admin', 'cashier'] },
 ];
+
+const adminNav = [];
 
 export default function Sidebar({ lowStockCount = 0 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -30,12 +32,11 @@ export default function Sidebar({ lowStockCount = 0 }) {
     navigate('/login');
   };
 
-  const allItems = [...navItems, ...adminNav].filter(
-    (item) => item.roles.includes(user?.role)
-  );
+  const isAdmin = user?.role === 'admin';
 
-  const mainItems = allItems.slice(0, 2);
-  const managementItems = allItems.slice(2);
+  const mainItems = navItems.filter(item => item.roles.includes(user?.role));
+  const mgmtItems = managementNav.filter(item => item.roles.includes(user?.role));
+  const adminItems = adminNav.filter(item => item.roles.includes(user?.role));
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -65,9 +66,7 @@ export default function Sidebar({ lowStockCount = 0 }) {
           <NavLink
             key={item.path}
             to={item.path}
-            className={({ isActive }) =>
-              `sidebar-nav-item ${isActive ? 'active' : ''}`
-            }
+            className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}
             title={collapsed ? item.label : ''}
           >
             <item.icon className="nav-icon" size={20} />
@@ -76,23 +75,39 @@ export default function Sidebar({ lowStockCount = 0 }) {
         ))}
 
         {/* Management */}
-        {managementItems.length > 0 && (
+        {mgmtItems.length > 0 && (
           <>
             <div className="sidebar-section-label">Management</div>
-            {managementItems.map((item) => (
+            {mgmtItems.map((item) => (
               <NavLink
                 key={item.path}
                 to={item.path}
-                className={({ isActive }) =>
-                  `sidebar-nav-item ${isActive ? 'active' : ''}`
-                }
+                className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}
                 title={collapsed ? item.label : ''}
               >
                 <item.icon className="nav-icon" size={20} />
                 <span className="nav-label">{item.label}</span>
-                {item.path === '/inventory' && lowStockCount > 0 && (
+                {item.path === '/inventory' && (lowStockCount > 0 || (lowStockCount === 0 && localStorage.getItem('showZeroBadge') === 'true')) && (
                   <span className="nav-badge">{lowStockCount}</span>
                 )}
+              </NavLink>
+            ))}
+          </>
+        )}
+
+        {/* Admin */}
+        {isAdmin && adminItems.length > 0 && (
+          <>
+            <div className="sidebar-section-label" style={{ color: 'var(--color-primary)', opacity: 0.8 }}>Admin</div>
+            {adminItems.map((item) => (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}
+                title={collapsed ? item.label : ''}
+              >
+                <item.icon className="nav-icon" size={20} />
+                <span className="nav-label">{item.label}</span>
               </NavLink>
             ))}
           </>

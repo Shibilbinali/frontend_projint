@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Plus, Edit2, Trash2, BookOpen, Info } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Plus, Edit2, Trash2, BookOpen, Info, Upload, Download, ClipboardList, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
 import { booksAPI, categoriesAPI } from '../../api';
 import { useAuthStore } from '../../store/authStore';
 import Modal from '../../components/UI/Modal';
@@ -10,6 +10,10 @@ import toast from 'react-hot-toast';
 import BookDetailsModal from '../../components/Books/BookDetailsModal';
 
 function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
+  const [importMode, setImportMode] = useState('single'); // 'single' or 'bulk'
+  const [bulkTab, setBulkTab] = useState('import'); // 'import' or 'history'
+  
+  // Single mode state
   const [form, setForm] = useState({
     title: '', author: '', isbn: '', category_id: '', price: '',
     cost_price: '', stock_qty: '', low_stock_threshold: '5',
@@ -20,8 +24,20 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [fetching, setFetching] = useState(false);
 
+  // Bulk mode state
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [session, setSession] = useState(null);
+  const [duplicateMode, setDuplicateMode] = useState('skip');
+  const [history, setHistory] = useState([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  const fileInputRef = useRef();
+  const pollingRef = useRef();
+
   useEffect(() => {
     if (book) {
+      setImportMode('single');
       setForm({
         title: book.title || '', author: book.author || '',
         isbn: book.isbn || '', category_id: book.category_id || '',
@@ -29,7 +45,7 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
         stock_qty: book.stock_qty || '', low_stock_threshold: book.low_stock_threshold || '5',
         publisher: book.publisher || '', published_year: book.published_year || '',
         description: book.description || '', cover_image_url: book.cover_image_url || '',
-        front_cover_url: book.front_cover_url || '', back_cover_url: book.back_cover_url || '',
+        front_cover_url: book.cover_image || book.front_cover_url || '', back_cover_url: book.back_cover_url || '',
         cover_source: book.cover_source || 'None', edition: book.edition || '',
         tax_rate: book.tax_rate !== undefined ? String(parseFloat(book.tax_rate) || 0) : '0',
         reading_age: book.reading_age || 'All Ages',
@@ -39,14 +55,132 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
         format: book.format || 'Printed'
       });
     } else {
+      setImportMode('single');
       setForm({
         title: '', author: '', isbn: '', category_id: '', price: '', cost_price: '', stock_qty: '', low_stock_threshold: '5',
         publisher: '', published_year: '', description: '', cover_image_url: '',
         front_cover_url: '', back_cover_url: '', cover_source: 'None', edition: '', tax_rate: '',
         reading_age: 'All Ages', price_type: 'Premium', tags: '', page_count: '0', format: 'Printed'
       });
+      setFile(null);
+      setPreview(null);
+      setSession(null);
     }
   }, [book, isOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, []);
+
+  const fetchHistory = async () => {
+    setLoadingHistory(true);
+    try {
+      const res = await booksAPI.getImportHistory();
+      setHistory(res.data);
+    } catch {
+      toast.error('Failed to load import history.');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen && importMode === 'bulk' && bulkTab === 'history') {
+      fetchHistory();
+    }
+  }, [isOpen, importMode, bulkTab]);
+
+  const handleDownloadTemplate = async (format) => {
+    try {
+      const res = await booksAPI.downloadTemplate(format);
+      const url = URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `books_import_template.${format}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Failed to download template.');
+    }
+  };
+
+  const handlePreview = async () => {
+    if (!file) return;
+    setFetching(true);
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await booksAPI.preview(fd);
+      setPreview(res.data);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Preview failed.');
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!file) return;
+    setSaving(true);
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await booksAPI.import(fd, duplicateMode);
+      setSession({
+        id: res.data.session_id,
+        status: 'processing',
+        success_count: 0,
+        updated_count: 0,
+        skipped_count: 0,
+        failed_count: 0,
+        total_rows: preview ? preview.total_rows : 0
+      });
+      startPolling(res.data.session_id);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Import failed.');
+      setSaving(false);
+    }
+  };
+
+  const startPolling = (sessionId) => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    pollingRef.current = setInterval(async () => {
+      try {
+        const res = await booksAPI.getImportSessionStatus(sessionId);
+        const sess = res.data;
+        setSession(sess);
+        if (sess.status === 'completed' || sess.status === 'failed') {
+          clearInterval(pollingRef.current);
+          setSaving(false);
+          onSaved();
+          toast.success('Bulk book import job finished!');
+        }
+      } catch {
+        // Ignored
+      }
+    }, 1000);
+  };
+
+  const handleDownloadErrors = (sess) => {
+    const errors = sess.errors || [];
+    if (!errors.length) {
+      toast.error('No errors to download.');
+      return;
+    }
+    const lines = [
+      'row,title,isbn,error',
+      ...errors.map(e => `"${e.row}","${(e.title || '').replace(/"/g, '""')}","${(e.isbn || '').replace(/"/g, '""')}","${(e.error || '').replace(/"/g, '""')}"`)
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `book_import_errors_session_${sess.id}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleUploadCover = async (e, type) => {
     const file = e.target.files[0];
@@ -63,7 +197,6 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
       return;
     }
 
-    // Validate image quality/dimensions (minimum 100x100)
     const _URL = window.URL || window.webkitURL;
     const img = new Image();
     img.src = _URL.createObjectURL(file);
@@ -270,13 +403,9 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
     );
   };
 
-  return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title={book ? 'Edit Book' : 'Add New Book'}
-      size="lg"
-      footer={
+  const getFooter = () => {
+    if (importMode === 'single') {
+      return (
         <>
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
           {book && (
@@ -288,135 +417,598 @@ function BookFormModal({ isOpen, onClose, book, categories, onSaved }) {
             {saving ? <><div className="spinner" style={{ width: 16, height: 16 }} /> Saving...</> : 'Save Book'}
           </button>
         </>
+      );
+    }
+
+    if (bulkTab === 'history') {
+      return <button className="btn btn-secondary" onClick={onClose}>Close</button>;
+    }
+
+    if (session) {
+      if (session.status === 'processing') {
+        return <button className="btn btn-primary" disabled>Importing...</button>;
       }
+      return <button className="btn btn-secondary" onClick={onClose}>Close</button>;
+    }
+
+    if (preview) {
+      return (
+        <>
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              setPreview(null);
+              setFile(null);
+            }}
+            disabled={saving}
+          >
+            Cancel Preview
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={handleImport}
+            disabled={saving || preview.invalid_rows > 0}
+          >
+            {saving ? 'Importing...' : 'Import All Books'}
+          </button>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button
+          className="btn btn-primary"
+          onClick={handlePreview}
+          disabled={fetching || !file}
+        >
+          {fetching ? 'Generating Preview...' : 'Preview Data'}
+        </button>
+      </>
+    );
+  };
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={book ? 'Edit Book' : 'Add New Book'}
+      size="lg"
+      footer={getFooter()}
     >
-      <form onSubmit={handleSubmit}>
-        <div className="grid grid-2 gap-md">
-          {inp('title', 'Title', 'text', true)}
-          {inp('author', 'Author', 'text', true)}
-          
-          <div className="input-group">
-            <label className="input-label">ISBN</label>
-            <div style={{ display: 'flex', gap: 'var(--spacing-xs)' }}>
+      {/* Mode Selector Toggle (only when creating a new book) */}
+      {!book && (
+        <div style={{ display: 'flex', gap: 'var(--spacing-md)', marginBottom: 'var(--spacing-md)', background: 'var(--color-surface-2)', padding: 4, borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)', width: 'fit-content' }}>
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{
+              background: importMode === 'single' ? 'var(--color-primary)' : 'none',
+              color: importMode === 'single' ? 'white' : 'var(--color-text-secondary)',
+              fontWeight: importMode === 'single' ? 600 : 500,
+              border: 'none',
+              boxShadow: importMode === 'single' ? 'var(--shadow-sm)' : 'none',
+              padding: '6px 12px'
+            }}
+            onClick={() => setImportMode('single')}
+          >
+            Single Book
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            style={{
+              background: importMode === 'bulk' ? 'var(--color-primary)' : 'none',
+              color: importMode === 'bulk' ? 'white' : 'var(--color-text-secondary)',
+              fontWeight: importMode === 'bulk' ? 600 : 500,
+              border: 'none',
+              boxShadow: importMode === 'bulk' ? 'var(--shadow-sm)' : 'none',
+              padding: '6px 12px'
+            }}
+            onClick={() => setImportMode('bulk')}
+          >
+            Bulk Import
+          </button>
+        </div>
+      )}
+
+      {importMode === 'bulk' ? (
+        <div>
+          {/* Sub-tabs */}
+          <div style={{ display: 'flex', borderBottom: '1px solid var(--color-border)', marginBottom: 'var(--spacing-md)' }}>
+            <button
+              type="button"
+              style={{
+                background: 'none',
+                border: 'none',
+                borderBottom: bulkTab === 'import' ? '2px solid var(--color-primary)' : '2px solid transparent',
+                color: bulkTab === 'import' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                padding: '10px 15px',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                cursor: 'pointer'
+              }}
+              onClick={() => setBulkTab('import')}
+              disabled={saving}
+            >
+              <Upload size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+              Upload & Import
+            </button>
+            <button
+              type="button"
+              style={{
+                background: 'none',
+                border: 'none',
+                borderBottom: bulkTab === 'history' ? '2px solid var(--color-primary)' : '2px solid transparent',
+                color: bulkTab === 'history' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                padding: '10px 15px',
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                cursor: 'pointer'
+              }}
+              onClick={() => setBulkTab('history')}
+              disabled={saving}
+            >
+              <ClipboardList size={14} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+              Import History
+            </button>
+          </div>
+
+          {bulkTab === 'import' ? (
+            <div>
+              {/* Importing state (Progress Bar) */}
+              {session && session.status === 'processing' ? (
+                <div style={{ textAlign: 'center', padding: 'var(--spacing-lg) 0' }}>
+                  <div className="spinner spin" style={{ width: 36, height: 36, margin: '0 auto 15px' }} />
+                  <p style={{ fontWeight: 600, marginBottom: 5 }}>Importing books...</p>
+                  {(() => {
+                    const total = session.total_rows || 1;
+                    const processed = session.success_count + session.updated_count + session.skipped_count + session.failed_count;
+                    const pct = Math.min(100, Math.round((processed / total) * 100));
+                    return (
+                      <div style={{ maxWidth: 400, margin: '0 auto' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--color-text-secondary)', marginBottom: 5 }}>
+                          <span>{pct}%</span>
+                          <span>{processed} / {total} completed</span>
+                        </div>
+                        <div style={{ height: 8, background: 'var(--color-surface-3)', borderRadius: 4, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: `${pct}%`, background: 'var(--color-primary)', borderRadius: 4, transition: 'width 0.2s ease' }} />
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : session && (session.status === 'completed' || session.status === 'failed') ? (
+                /* Results Screen */
+                <div style={{ background: 'var(--color-surface-2)', padding: 'var(--spacing-lg)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--color-border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 15 }}>
+                    <CheckCircle size={24} color="var(--color-success)" />
+                    <h3 style={{ margin: 0, fontWeight: 700 }}>Books Bulk Import Finished</h3>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12, marginBottom: 20 }}>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--color-success)' }}>{session.success_count}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Books Imported</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--color-primary)' }}>{session.updated_count}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Books Updated</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--color-text-muted)' }}>{session.skipped_count}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Duplicates Skipped</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: session.failed_count > 0 ? 'var(--color-danger)' : 'var(--color-text-muted)' }}>{session.failed_count}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Failed Rows</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center', border: '1px solid rgba(16,185,129,0.2)' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: 'var(--color-success)' }}>{session.covers_imported_count || 0}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Covers Imported</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: 12, borderRadius: 'var(--radius-md)', textAlign: 'center', border: (session.failed_covers_count || 0) > 0 ? '1px solid rgba(239,68,68,0.2)' : 'none' }}>
+                      <div style={{ fontSize: '1.25rem', fontWeight: 'bold', color: (session.failed_covers_count || 0) > 0 ? 'var(--color-danger)' : 'var(--color-text-muted)' }}>{session.failed_covers_count || 0}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>Failed Covers</div>
+                    </div>
+                  </div>
+
+                  {session.failed_count > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)', padding: '10px 14px', borderRadius: 'var(--radius-md)', marginBottom: 20 }}>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--color-danger)' }}>Some rows failed to import due to database or verification constraints.</span>
+                      <button type="button" className="btn btn-danger btn-sm" onClick={() => handleDownloadErrors(session)}>
+                        Download Error Report
+                      </button>
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => {
+                        setFile(null);
+                        setPreview(null);
+                        setSession(null);
+                      }}
+                    >
+                      Import Another File
+                    </button>
+                  </div>
+                </div>
+              ) : preview ? (
+                /* Preview Data Panel */
+                <div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 15 }}>
+                    <div style={{ background: 'var(--color-surface-3)', padding: '10px', borderRadius: 'var(--radius-md)' }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>{preview.total_rows}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Total Rows</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: '10px', borderRadius: 'var(--radius-md)' }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: 'var(--color-success)' }}>{preview.valid_rows}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Valid Rows</div>
+                    </div>
+                    <div style={{
+                      background: 'var(--color-surface-3)',
+                      padding: '10px',
+                      borderRadius: 'var(--radius-md)',
+                      border: preview.invalid_rows > 0 ? '1px solid rgba(224,82,82,0.3)' : 'none',
+                      backgroundColor: preview.invalid_rows > 0 ? 'rgba(224,82,82,0.05)' : 'var(--color-surface-3)'
+                    }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: preview.invalid_rows > 0 ? 'var(--color-danger)' : 'var(--color-success)' }}>{preview.invalid_rows}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Invalid Rows</div>
+                    </div>
+                    <div style={{ background: 'var(--color-surface-3)', padding: '10px', borderRadius: 'var(--radius-md)' }}>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', color: 'var(--color-primary)' }}>{preview.duplicate_isbn_count}</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>Duplicate ISBNs</div>
+                    </div>
+                  </div>
+
+                  {preview.invalid_rows > 0 && (
+                    <div style={{ background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: 'var(--radius-md)', padding: 12, marginBottom: 15 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                        <AlertTriangle color="var(--color-danger)" size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+                        <div>
+                          <p style={{ margin: 0, fontWeight: 600, color: 'var(--color-danger)', fontSize: '0.85rem' }}>File contains validation errors.</p>
+                          <p style={{ margin: '4px 0 0', color: 'var(--color-text-secondary)', fontSize: '0.75rem' }}>Please fix all validation errors in your CSV/XLSX sheet and upload it again. Import is disabled until all rows are valid.</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Preview Table */}
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 700, marginBottom: 8 }}>Row Preview (First 50 Rows)</h4>
+                  <div className="table-wrapper" style={{ maxHeight: 220, overflowY: 'auto', marginBottom: 15, border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}>
+                    <table className="table" style={{ fontSize: '0.75rem' }}>
+                      <thead>
+                        <tr>
+                          <th>Row</th>
+                          <th>Title</th>
+                          <th>Author</th>
+                          <th>ISBN</th>
+                          <th>Category</th>
+                          <th>Price</th>
+                          <th>Errors / Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {preview.preview.map((row, ridx) => {
+                          const rowErrObj = preview.errors.find(e => e.row === row._row);
+                          const hasErr = !!rowErrObj;
+                          return (
+                            <tr key={row._row} style={{ background: hasErr ? 'rgba(239,68,68,0.04)' : 'none' }}>
+                              <td>{row._row}</td>
+                              <td style={{ fontWeight: 600 }}>{row.title || '—'}</td>
+                              <td>{row.author || '—'}</td>
+                              <td>{row.isbn || '—'}</td>
+                              <td>{row.category || '—'}</td>
+                              <td>₹{row.selling_price}</td>
+                              <td>
+                                {hasErr ? (
+                                  <div style={{ color: 'var(--color-danger)', fontSize: '0.7rem' }}>
+                                    {rowErrObj.errors.join('; ')}
+                                  </div>
+                                ) : (
+                                  <span style={{ color: 'var(--color-success)', fontWeight: 600 }}>Valid</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Duplicate Handling Option */}
+                  {preview.duplicate_isbn_count > 0 && (
+                    <div style={{ background: 'var(--color-surface-3)', border: '1px solid var(--color-border)', padding: 12, borderRadius: 'var(--radius-md)', marginBottom: 15 }}>
+                      <div className="input-group" style={{ margin: 0 }}>
+                        <label className="input-label" style={{ fontWeight: 700 }}>Duplicate ISBN Handling Option</label>
+                        <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', margin: '2px 0 8px' }}>
+                          We detected {preview.duplicate_isbn_count} books in this sheet with ISBNs already existing in the system or duplicated in the sheet. Select how you want to handle them:
+                        </p>
+                        <select
+                          className="select"
+                          value={duplicateMode}
+                          onChange={(e) => setDuplicateMode(e.target.value)}
+                          style={{ maxWidth: 260 }}
+                        >
+                          <option value="skip">Skip duplicates</option>
+                          <option value="update">Update existing book details</option>
+                          <option value="import_new">Import as new book copy</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Upload State */
+                <div>
+                  <p className="text-secondary" style={{ fontSize: '0.8rem', marginBottom: 15 }}>
+                    Select a CSV or XLSX spreadsheet containing your catalog books list. Ensure all columns match the template.
+                  </p>
+
+                  <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleDownloadTemplate('csv')}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                    >
+                      <Download size={14} /> CSV Template
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleDownloadTemplate('xlsx')}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+                    >
+                      <Download size={14} /> XLSX Template
+                    </button>
+                  </div>
+
+                  <div
+                    className={`dm-drop-zone ${file ? 'dm-drop-zone-filled' : ''}`}
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{
+                      border: '2px dashed var(--color-border)',
+                      padding: '40px 20px',
+                      borderRadius: 'var(--radius-lg)',
+                      textAlign: 'center',
+                      cursor: 'pointer',
+                      background: 'var(--color-surface-2)',
+                      transition: 'all 0.2s',
+                      marginBottom: 15
+                    }}
+                  >
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".csv,.xlsx,.xls"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const f = e.target.files[0];
+                        if (f) {
+                          setFile(f);
+                          setPreview(null);
+                        }
+                      }}
+                    />
+                    <Upload size={32} color="var(--color-primary)" style={{ margin: '0 auto 10px' }} />
+                    {file ? (
+                      <div>
+                        <p style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--color-text)' }}>{file.name}</p>
+                        <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
+                          {(file.size / 1024).toFixed(1)} KB
+                        </p>
+                      </div>
+                    ) : (
+                      <div>
+                        <p style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--color-text)' }}>
+                          Click to browse or drag & drop file
+                        </p>
+                        <p style={{ fontSize: '0.72rem', color: 'var(--color-text-muted)', marginTop: 4 }}>
+                          CSV or XLSX spreadsheets. Maximum 50MB limit.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Import History List Panel */
+            <div>
+              {loadingHistory ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: '30px 0' }}>
+                  <div className="spinner" style={{ width: 24, height: 24 }} />
+                </div>
+              ) : history.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '30px 0', color: 'var(--color-text-muted)' }}>
+                  No bulk book import session records found.
+                </div>
+              ) : (
+                <div className="table-wrapper" style={{ maxHeight: 350, overflowY: 'auto' }}>
+                  <table className="table" style={{ fontSize: '0.78rem' }}>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>File Name</th>
+                        <th>User</th>
+                        <th>Rows</th>
+                        <th>Success</th>
+                        <th>Updated</th>
+                        <th>Skipped</th>
+                        <th>Failed</th>
+                        <th>Covers</th>
+                        <th>Failed Covers</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {history.map((sess) => (
+                        <tr key={sess.id}>
+                          <td style={{ whiteSpace: 'nowrap' }}>
+                            {new Date(sess.created_at).toLocaleString('en-IN', {
+                              day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+                            })}
+                          </td>
+                          <td style={{ fontWeight: 600, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sess.file_name}>
+                            {sess.file_name}
+                          </td>
+                          <td>{sess.imported_by_name || '—'}</td>
+                          <td>{sess.total_rows}</td>
+                          <td style={{ color: 'var(--color-success)', fontWeight: 600 }}>{sess.success_count}</td>
+                          <td style={{ color: 'var(--color-primary)', fontWeight: 600 }}>{sess.updated_count}</td>
+                          <td>{sess.skipped_count}</td>
+                          <td style={{ color: sess.failed_count > 0 ? 'var(--color-danger)' : 'inherit', fontWeight: sess.failed_count > 0 ? 600 : 500 }}>
+                            {sess.failed_count}
+                          </td>
+                          <td style={{ color: 'var(--color-success)', fontWeight: 600 }}>{sess.covers_imported_count || 0}</td>
+                          <td style={{ color: (sess.failed_covers_count || 0) > 0 ? 'var(--color-danger)' : 'inherit', fontWeight: (sess.failed_covers_count || 0) > 0 ? 600 : 500 }}>{sess.failed_covers_count || 0}</td>
+                          <td>
+                            <Badge type={sess.status === 'completed' ? 'success' : (sess.status === 'processing' ? 'warning' : 'danger')}>
+                              {sess.status}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit}>
+          <div className="grid grid-2 gap-md">
+            {inp('title', 'Title', 'text', true)}
+            {inp('author', 'Author', 'text', true)}
+            
+            <div className="input-group">
+              <label className="input-label">ISBN</label>
+              <div style={{ display: 'flex', gap: 'var(--spacing-xs)' }}>
+                <input
+                  type="text"
+                  className="input"
+                  value={form.isbn}
+                  onChange={(e) => setForm({ ...form, isbn: e.target.value })}
+                  placeholder="e.g. 9780743273565"
+                  style={{ flex: 1 }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ whiteSpace: 'nowrap', fontSize: '0.8rem', padding: '0 12px' }}
+                  onClick={handleFetchWebMetadata}
+                  disabled={fetching}
+                >
+                  Fetch Web Metadata
+                </button>
+              </div>
+            </div>
+
+            <div className="input-group">
+              <label className="input-label">Category</label>
+              <select
+                className="select"
+                value={form.category_id}
+                onChange={(e) => setForm({ ...form, category_id: e.target.value })}
+              >
+                <option value="">Select category...</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            {inp('price', 'Selling Price (₹)', 'number', false, 'Leave blank to auto-calculate')}
+            {inp('cost_price', 'Cost Price (₹)', 'number')}
+            {inp('stock_qty', 'Stock Quantity', 'number')}
+            {inp('low_stock_threshold', 'Low Stock Alert At', 'number')}
+            {inp('publisher', 'Publisher')}
+            {inp('published_year', 'Published Year', 'number')}
+            {inp('edition', 'Edition')}
+
+            <div className="input-group">
+              <label className="input-label">Tax Rate (GST %)</label>
+              <select
+                className="select"
+                value={form.tax_rate}
+                onChange={(e) => setForm({ ...form, tax_rate: e.target.value })}
+              >
+                <option value="">Auto-Calculate (GST %)</option>
+                <option value="0">0% — Tax Exempt</option>
+                <option value="5">5% — GST 5%</option>
+                <option value="12">12% — GST 12%</option>
+                <option value="18">18% — GST 18%</option>
+                <option value="28">28% — GST 28%</option>
+              </select>
+            </div>
+
+            <div className="input-group">
+              <label className="input-label">Cover Source</label>
               <input
                 type="text"
                 className="input"
-                value={form.isbn}
-                onChange={(e) => setForm({ ...form, isbn: e.target.value })}
-                placeholder="e.g. 9780743273565"
-                style={{ flex: 1 }}
+                value={form.cover_source}
+                disabled
+                style={{ background: 'var(--color-surface-3)', cursor: 'not-allowed', textTransform: 'capitalize' }}
               />
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ whiteSpace: 'nowrap', fontSize: '0.8rem', padding: '0 12px' }}
-                onClick={handleFetchWebMetadata}
-                disabled={fetching}
-              >
-                Fetch Web Metadata
-              </button>
             </div>
+
+            <div className="input-group">
+              <label className="input-label">Price Type</label>
+              <select
+                className="select"
+                value={form.price_type}
+                onChange={(e) => {
+                  const isFree = e.target.value === 'Free';
+                  setForm({
+                    ...form,
+                    price_type: e.target.value,
+                    price: isFree ? '0.00' : (form.price === '0.00' ? '' : form.price)
+                  });
+                }}
+              >
+                <option value="Premium">Premium</option>
+                <option value="Free">Free</option>
+              </select>
+            </div>
+            <div className="input-group">
+              <label className="input-label">Format *</label>
+              <select
+                className="select"
+                value={form.format}
+                onChange={(e) => setForm({ ...form, format: e.target.value })}
+                required
+              >
+                <option value="Printed">Printed</option>
+                <option value="Digital">Digital</option>
+              </select>
+            </div>
+            {inp('page_count', 'Page Count', 'number')}
+            {inp('reading_age', 'Reading Age')}
+            {inp('tags', 'Category Tags (Comma separated)')}
           </div>
 
-          <div className="input-group">
-            <label className="input-label">Category</label>
-            <select
-              className="select"
-              value={form.category_id}
-              onChange={(e) => setForm({ ...form, category_id: e.target.value })}
-            >
-              <option value="">Select category...</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          </div>
-          {inp('price', 'Selling Price (₹)', 'number', false, 'Leave blank to auto-calculate')}
-          {inp('cost_price', 'Cost Price (₹)', 'number')}
-          {inp('stock_qty', 'Stock Quantity', 'number')}
-          {inp('low_stock_threshold', 'Low Stock Alert At', 'number')}
-          {inp('publisher', 'Publisher')}
-          {inp('published_year', 'Published Year', 'number')}
-          {inp('edition', 'Edition')}
-
-          <div className="input-group">
-            <label className="input-label">Tax Rate (GST %)</label>
-            <select
-              className="select"
-              value={form.tax_rate}
-              onChange={(e) => setForm({ ...form, tax_rate: e.target.value })}
-            >
-              <option value="">Auto-Calculate (GST %)</option>
-              <option value="0">0% — Tax Exempt</option>
-              <option value="5">5% — GST 5%</option>
-              <option value="12">12% — GST 12%</option>
-              <option value="18">18% — GST 18%</option>
-              <option value="28">28% — GST 28%</option>
-            </select>
+          <div className="flex gap-md mt-md" style={{ borderTop: '1px solid var(--color-border)', paddingTop: 'var(--spacing-md)' }}>
+            {renderCoverControl('front', 'Front Cover Image')}
+            {renderCoverControl('back', 'Back Cover Image')}
           </div>
 
-          <div className="input-group">
-            <label className="input-label">Cover Source</label>
-            <input
-              type="text"
+          <div className="input-group mt-md">
+            <label className="input-label">Description</label>
+            <textarea
               className="input"
-              value={form.cover_source}
-              disabled
-              style={{ background: 'var(--color-surface-3)', cursor: 'not-allowed', textTransform: 'capitalize' }}
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              rows={3}
             />
           </div>
-
-          <div className="input-group">
-            <label className="input-label">Price Type</label>
-            <select
-              className="select"
-              value={form.price_type}
-              onChange={(e) => {
-                const isFree = e.target.value === 'Free';
-                setForm({
-                  ...form,
-                  price_type: e.target.value,
-                  price: isFree ? '0.00' : (form.price === '0.00' ? '' : form.price)
-                });
-              }}
-            >
-              <option value="Premium">Premium</option>
-              <option value="Free">Free</option>
-            </select>
-          </div>
-          <div className="input-group">
-            <label className="input-label">Format *</label>
-            <select
-              className="select"
-              value={form.format}
-              onChange={(e) => setForm({ ...form, format: e.target.value })}
-              required
-            >
-              <option value="Printed">Printed</option>
-              <option value="Digital">Digital</option>
-            </select>
-          </div>
-          {inp('page_count', 'Page Count', 'number')}
-          {inp('reading_age', 'Reading Age')}
-          {inp('tags', 'Category Tags (Comma separated)')}
-        </div>
-
-        {/* Cover uploads */}
-        <div className="flex gap-md mt-md" style={{ borderTop: '1px solid var(--color-border)', paddingTop: 'var(--spacing-md)' }}>
-          {renderCoverControl('front', 'Front Cover Image')}
-          {renderCoverControl('back', 'Back Cover Image')}
-        </div>
-
-        <div className="input-group mt-md">
-          <label className="input-label">Description</label>
-          <textarea
-            className="input"
-            value={form.description}
-            onChange={(e) => setForm({ ...form, description: e.target.value })}
-            rows={3}
-          />
-        </div>
-      </form>
+        </form>
+      )}
     </Modal>
   );
 }
@@ -723,8 +1315,15 @@ export default function BooksPage() {
       ]);
       setBooks(booksRes.data.books || []);
       setCategories(catsRes.data || []);
+      window.dispatchEvent(new CustomEvent('inventory-updated'));
     } catch (err) {
-      toast.error('Failed to load books.');
+      const errMsg = err.response?.data?.message || err.message || 'Failed to load books';
+      toast.error(`Failed to load books: ${errMsg}`);
+      console.error('📚 [Books Page Load Data Error]');
+      console.error(`- Request URL: ${err.config ? `${err.config.baseURL || ''}${err.config.url}` : 'N/A'}`);
+      console.error(`- Response Status: ${err.response?.status || 'Network Error / Timeout / CORS'}`);
+      console.error(`- Response Body:`, err.response?.data);
+      console.error(`- Error Stack Trace:`, err.stack);
     } finally {
       setLoading(false);
     }
@@ -750,7 +1349,7 @@ export default function BooksPage() {
   };
 
   const getCoverUrl = (book) => {
-    const url = book.front_cover_url || book.cover_image_url;
+    const url = book.cover_image || book.front_cover_url || book.cover_image_url;
     if (!url) return '';
     if (url.startsWith('http')) return url;
     const API_URL = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : 'http://localhost:5000';

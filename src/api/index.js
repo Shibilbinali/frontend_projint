@@ -24,12 +24,37 @@ const api = axios.create({
   timeout: 30000, // 30 second timeout
 });
 
-// Request interceptor — attach token
+// Request interceptor — attach token and log request details
 api.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token;
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+
+  // Print frontend request details for debugging
+  const fullUrl = `${config.baseURL || ''}${config.url}`;
+  console.log(`\n🚀 [Frontend Request]`);
+  console.log(`- URL: ${fullUrl}`);
+  console.log(`- Method: ${config.method?.toUpperCase()}`);
+  console.log(`- Headers:`, config.headers);
+  if (config.url?.includes('/books')) {
+    console.log(`📚 [Books API Request Log] Initiated request to ${fullUrl}`);
+  }
+  if (config.data) {
+    if (config.data instanceof FormData) {
+      console.log(`- Payload (FormData):`);
+      for (const [key, value] of config.data.entries()) {
+        if (value instanceof File) {
+          console.log(`  - ${key}: File (name: "${value.name}", size: ${value.size} bytes)`);
+        } else {
+          console.log(`  - ${key}: ${value}`);
+        }
+      }
+    } else {
+      console.log(`- Payload:`, config.data);
+    }
+  }
+
   return config;
 });
 
@@ -45,9 +70,27 @@ const ERROR_MESSAGES = {
 
 // Response interceptor — handle errors gracefully
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const fullUrl = response.config ? `${response.config.baseURL || ''}${response.config.url}` : 'N/A';
+    console.log(`✅ [Frontend Response] URL: ${fullUrl} - Status: ${response.status}`);
+    if (response.config?.url?.includes('/books')) {
+      console.log(`📚 [Books API Response Success] URL: ${fullUrl}`);
+      console.log(`- Status: ${response.status}`);
+      console.log(`- Body:`, response.data);
+    }
+    return response;
+  },
   (error) => {
     const status = error.response?.status;
+    const fullUrl = error.config ? `${error.config.baseURL || ''}${error.config.url}` : 'N/A';
+    
+    // Add network debugging logs for /books (and other errors)
+    console.error(`❌ [Frontend Response Error] URL: ${fullUrl} - Status: ${status || 'Network Error'}`);
+    console.error(`📚 [API Error Diagnostics]`);
+    console.error(`- Request URL: ${fullUrl}`);
+    console.error(`- Response Status: ${status || 'Network Error / Timeout / CORS'}`);
+    console.error(`- Response Body:`, error.response?.data);
+    console.error(`- Error Stack Trace:`, error.stack);
 
     // 401 Unauthorized — logout
     if (status === 401) {
@@ -56,20 +99,23 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // Network / timeout errors
+    // Network / timeout errors (fetch actually fails)
     if (!error.response) {
       if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
         toast.error('Request timed out. Please check your connection and try again.', { id: 'network-timeout' });
       } else {
-        toast.error('Network error. Please check your internet connection.', { id: 'network-error' });
+        toast.error('Network connectivity failed. Please check if the server is running and accessible.', { id: 'network-error' });
       }
       return Promise.reject(error);
     }
 
-    // Show user-friendly message for known status codes
-    const friendlyMessage = ERROR_MESSAGES[status];
-    if (friendlyMessage) {
-      toast.error(friendlyMessage, { id: `http-${status}` });
+    // Show user-friendly message for known status codes (except if specific message is in response data)
+    const serverMessage = error.response.data?.message;
+    if (!serverMessage) {
+      const friendlyMessage = ERROR_MESSAGES[status];
+      if (friendlyMessage) {
+        toast.error(friendlyMessage, { id: `http-${status}` });
+      }
     }
 
     return Promise.reject(error);
@@ -90,7 +136,7 @@ export const booksAPI = {
   create: (data) => api.post('/books', data),
   update: (id, data) => api.put(`/books/${id}`, data),
   delete: (id) => api.delete(`/books/${id}`),
-  upload: (formData) => api.post('/books/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  upload: (formData) => api.post('/books/upload', formData),
   fetchMetadata: (data) => api.post('/books/fetch-metadata', data),
   refreshMetadata: (id) => api.post(`/books/${id}/refresh`),
   verifyCategories: () => api.post('/books/verify-categories'),
@@ -101,6 +147,11 @@ export const booksAPI = {
   rejectSuggestion: (id) => api.post(`/books/${id}/reject-suggestion`),
   auditBooks: () => api.post('/books/audit'),
   getAuditReport: () => api.get('/books/audit-report'),
+  import: (formData, duplicateMode) => api.post(`/books/import?duplicateMode=${duplicateMode}`, formData, { timeout: 300000 }),
+  preview: (formData) => api.post('/books/import?preview=true', formData, { timeout: 120000 }),
+  getImportHistory: () => api.get('/books/import-history'),
+  getImportSessionStatus: (id) => api.get(`/books/import-history/${id}`),
+  downloadTemplate: (format) => api.get(`/books/import-template?format=${format}`, { responseType: 'blob' }),
 };
 
 // ── Categories ────────────────────────────────────
@@ -124,6 +175,14 @@ export const customersAPI = {
   create: (data) => api.post('/customers', data),
   update: (id, data) => api.put(`/customers/${id}`, data),
   delete: (id) => api.delete(`/customers/${id}`),
+  import: (formData, duplicateMode) => api.post(`/customers/import?duplicateMode=${duplicateMode}`, formData, { timeout: 300000 }),
+  preview: (formData) => api.post('/customers/import?preview=true', formData, { timeout: 120000 }),
+  getImportHistory: () => api.get('/customers/import-history'),
+  getImportSessionStatus: (id) => api.get(`/customers/import-history/${id}`),
+  getImportReports: () => api.get('/customers/import-reports'),
+  downloadImportReport: (id) => api.get(`/customers/import-reports/${id}/download`, { responseType: 'blob' }),
+  downloadTemplate: (format) => api.get(`/customers/import-template?format=${format}`, { responseType: 'blob' }),
+  export: (params) => api.get('/customers/export', { params, responseType: 'blob' }),
 };
 
 // ── Sales ─────────────────────────────────────────
@@ -147,4 +206,15 @@ export const usersAPI = {
   getAuditLogs: () => api.get('/users/audit-logs'),
 };
 
+
+
+// ── Settings ──────────────────────────────────────
+export const settingsAPI = {
+  getStore: () => api.get('/settings/store'),
+  updateStore: (data) => api.put('/settings/store', data),
+  getPayment: () => api.get('/settings/payment'),
+  updatePayment: (data) => api.put('/settings/payment', data),
+};
+
 export default api;
+

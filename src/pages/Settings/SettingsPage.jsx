@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, Edit2, Tag, AlertTriangle, Sparkles, Check, CheckCircle2, RefreshCw } from 'lucide-react';
-import { authAPI, usersAPI, categoriesAPI, booksAPI } from '../../api';
+import { authAPI, usersAPI, categoriesAPI, booksAPI, settingsAPI } from '../../api';
 import { useAuthStore } from '../../store/authStore';
 import Modal from '../../components/UI/Modal';
 import Badge from '../../components/UI/Badge';
@@ -98,8 +98,10 @@ function UsersSection({ onUserAction }) {
       setUsers(users.map((u) => (u.id === user.id ? res.data : u)));
       toast.success(`User ${res.data.username} ${res.data.is_active ? 'activated' : 'deactivated'}.`);
       if (onUserAction) onUserAction();
-    } catch {
-      toast.error('Failed to update user.');
+    } catch (err) {
+      console.error('[UsersSection] handleToggleActive error:', err);
+      console.error('[UsersSection] Server response:', err.response?.data);
+      toast.error(err.response?.data?.message || 'Failed to update user.');
     }
   };
 
@@ -1445,6 +1447,225 @@ function AuditLogsSection({ triggerReload }) {
   );
 }
 
+function StoreInformationSection() {
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'admin';
+  const [form, setForm] = useState({ store_name: '', store_email: '', store_phone: '' });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    settingsAPI.getStore()
+      .then((res) => setForm(res.data))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!isAdmin) return;
+    setSaving(true);
+    try {
+      const res = await settingsAPI.updateStore(form);
+      setForm(res.data);
+      toast.success('Store settings updated successfully!');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to update store settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="card mb-lg"><Spinner /></div>;
+
+  return (
+    <div className="card mb-lg" id="store-settings-section">
+      <div className="flex items-center justify-between mb-md">
+        <h3 className="font-display flex items-center gap-sm" style={{ fontSize: '1rem', margin: 0 }}>
+          <span>Store Information</span>
+          <Badge type={isAdmin ? 'success' : 'info'} style={{ fontSize: '0.7rem', padding: '2px 6px' }}>
+            {isAdmin ? '⚙ Edit (Admin)' : '👁 View Only (Cashier)'}
+          </Badge>
+        </h3>
+      </div>
+
+      {isAdmin ? (
+        <form onSubmit={handleSubmit}>
+          <div className="grid grid-3 gap-md">
+            <div className="input-group">
+              <label className="input-label">Store Name *</label>
+              <input
+                type="text"
+                className="input"
+                value={form.store_name}
+                onChange={(e) => setForm({ ...form, store_name: e.target.value })}
+                required
+                id="store-name-input"
+              />
+            </div>
+            <div className="input-group">
+              <label className="input-label">Store Email *</label>
+              <input
+                type="email"
+                className="input"
+                value={form.store_email}
+                onChange={(e) => setForm({ ...form, store_email: e.target.value })}
+                required
+                id="store-email-input"
+              />
+            </div>
+            <div className="input-group">
+              <label className="input-label">Store Phone Number *</label>
+              <input
+                type="text"
+                className="input"
+                value={form.store_phone}
+                onChange={(e) => setForm({ ...form, store_phone: e.target.value })}
+                required
+                id="store-phone-input"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end mt-md">
+            <button type="submit" className="btn btn-primary" disabled={saving} id="save-store-settings-btn">
+              {saving ? 'Saving...' : 'Save Store Details'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="grid grid-3 gap-md" style={{ background: 'var(--color-surface-2)', padding: '16px', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)' }}>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Store Name</div>
+            <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--color-text)' }}>{form.store_name}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Store Email</div>
+            <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--color-text)' }}>{form.store_email}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Store Phone</div>
+            <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--color-text)' }}>{form.store_phone}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PaymentSettingsSection() {
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'admin';
+  const [form, setForm] = useState({ upi_enabled: true, upi_id: '', merchant_name: '' });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    settingsAPI.getPayment()
+      .then((res) => setForm(res.data))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!isAdmin) return;
+    setSaving(true);
+    try {
+      const res = await settingsAPI.updatePayment(form);
+      setForm(res.data);
+      toast.success('Payment settings updated successfully!');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to update payment settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="card mb-lg"><Spinner /></div>;
+
+  return (
+    <div className="card mb-lg" id="payment-settings-section">
+      <div className="flex items-center justify-between mb-md">
+        <h3 className="font-display flex items-center gap-sm" style={{ fontSize: '1rem', margin: 0 }}>
+          <span>Payment Settings</span>
+          <Badge type={isAdmin ? 'success' : 'info'} style={{ fontSize: '0.7rem', padding: '2px 6px' }}>
+            {isAdmin ? '⚙ Edit (Admin)' : '👁 View Only (Cashier)'}
+          </Badge>
+        </h3>
+      </div>
+
+      {isAdmin ? (
+        <form onSubmit={handleSubmit}>
+          <div className="grid grid-3 gap-md">
+            <div className="input-group" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+              <label className="input-label" style={{ marginBottom: 8 }}>Enable UPI Payments</label>
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={form.upi_enabled}
+                  onChange={(e) => setForm({ ...form, upi_enabled: e.target.checked })}
+                  id="upi-enabled-toggle"
+                />
+                <span className="slider"></span>
+              </label>
+            </div>
+            <div className="input-group">
+              <label className="input-label">UPI ID *</label>
+              <input
+                type="text"
+                className="input"
+                value={form.upi_id}
+                onChange={(e) => setForm({ ...form, upi_id: e.target.value })}
+                required
+                disabled={!form.upi_enabled}
+                style={{ opacity: form.upi_enabled ? 1 : 0.6 }}
+                id="upi-id-input"
+              />
+            </div>
+            <div className="input-group">
+              <label className="input-label">Merchant Name *</label>
+              <input
+                type="text"
+                className="input"
+                value={form.merchant_name}
+                onChange={(e) => setForm({ ...form, merchant_name: e.target.value })}
+                required
+                disabled={!form.upi_enabled}
+                style={{ opacity: form.upi_enabled ? 1 : 0.6 }}
+                id="upi-merchant-name-input"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end mt-md">
+            <button type="submit" className="btn btn-primary" disabled={saving} id="save-payment-settings-btn">
+              {saving ? 'Saving...' : 'Save Payment Details'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="grid grid-3 gap-md" style={{ background: 'var(--color-surface-2)', padding: '16px', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)' }}>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>UPI Payments</div>
+            <div style={{ marginTop: 4 }}>
+              <Badge type={form.upi_enabled ? 'success' : 'danger'}>
+                {form.upi_enabled ? 'Enabled' : 'Disabled'}
+              </Badge>
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>UPI ID</div>
+            <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--color-text)' }}>{form.upi_enabled ? form.upi_id : '—'}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Merchant Name</div>
+            <div style={{ fontWeight: 600, marginTop: 4, color: 'var(--color-text)' }}>{form.upi_enabled ? form.merchant_name : '—'}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const { user } = useAuthStore();
   const isAdmin = user?.role === 'admin';
@@ -1477,6 +1698,9 @@ export default function SettingsPage() {
       <ThemeSettingsSection />
 
       <ChangePasswordSection />
+
+      <StoreInformationSection />
+      <PaymentSettingsSection />
 
       {isAdmin && (
         <>

@@ -41,6 +41,7 @@ export default function InventoryPage() {
     try {
       await inventoryAPI.updateStock(editModal.id, stockForm);
       toast.success('Stock updated!');
+      window.dispatchEvent(new CustomEvent('inventory-updated'));
       setEditModal(null);
       loadInventory();
     } catch {
@@ -68,7 +69,7 @@ export default function InventoryPage() {
   };
 
   const getCoverUrl = (book) => {
-    const url = book.front_cover_url || book.cover_image_url;
+    const url = book.cover_image || book.front_cover_url || book.cover_image_url;
     if (!url) return '';
     if (url.startsWith('http')) return url;
     const API_URL = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : 'http://localhost:5000';

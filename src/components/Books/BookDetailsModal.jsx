@@ -29,7 +29,7 @@ export default function BookDetailsModal({ isOpen, onClose, book }) {
     return `${API_URL}${path}`;
   };
 
-  const frontCover = getImageUrl(book.front_cover_url || book.cover_image_url);
+  const frontCover = getImageUrl(book.cover_image || book.front_cover_url || book.cover_image_url);
   const backCover = getImageUrl(book.back_cover_url);
   const currentCover = activeTab === 'front' ? frontCover : backCover;
 
